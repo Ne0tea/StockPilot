@@ -1,0 +1,33 @@
+backend/data/stock_analysis_app.db
+backend/data/stock_analysis_core.db
+backend/data/archive/
+backend/reports/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.env
+
+# Local agent / editor / session state
+.agents/
+.claude/
+.codebuddy/
+.omc/
+.superpowers/
+.vscode/
+.pytest_cache/
+backend/.pytest_cache/
+backend/__pycache__/
+tests/
+frontend/.omc/
+
+# Local agent-generated planning docs
+docs/superpowers/plans/
+docs/superpowers/specs/
+docs/superpowers
+
+# Local experimental / external helper directories
+DeepSeek-api
+tickflow-api
+
+skills-lock.json
