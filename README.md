@@ -215,6 +215,34 @@ StockPilot stores generated reports as files in `backend/reports/`, including:
 
 ## Quick Start
 
+### Clone and Start in This Environment
+
+If you want to run the full project directly after cloning in the current environment, use:
+
+```bash
+git clone <your-repo-url>
+cd Stock_analysis
+bash start.sh
+```
+
+This startup script will:
+
+- start the backend with `/home/ne0tea/miniconda3/envs/stockPanel/bin/python`
+- start the frontend with `npm run dev`
+- wait for both services to become available
+
+After startup:
+
+- Backend: `http://localhost:8000`
+- Frontend: `http://localhost:5173`
+- API Docs: `http://localhost:8000/docs`
+
+Before running `bash start.sh`, make sure:
+
+- the `stockPanel` Python environment already exists
+- frontend dependencies have already been installed in `frontend/`
+- Node.js and npm are available in the current shell
+
 ### Start the Backend
 
 Use Python 3.10+.
