@@ -8,8 +8,6 @@ StockPilot is a local stock analysis workspace built with FastAPI, Vue 3, and SQ
 
 ![StockPilot Main Interface](./StockPilot.png)
 
-### User Guide
-
 ![StockPilot User Guide](./StockPilot_guide.png)
 
 ## Overview
@@ -262,88 +260,6 @@ Saved field:
 - `tickflow_api_key`
 
 The backend applies this value to the `TICKFLOW_API_KEY` environment variable at runtime.
-
-## API Overview
-
-### Watchlist
-
-- `GET /api/watchlist`
-- `GET /api/watchlist/overview`
-- `GET /api/watchlist/check`
-- `POST /api/watchlist`
-- `POST /api/watchlist/reset`
-- `POST /api/watchlist/analysis/clear`
-- `DELETE /api/watchlist/{stock_code}/analysis`
-- `DELETE /api/watchlist/{stock_id}`
-
-### Analysis and Reports
-
-- `POST /api/analyze/all`
-- `POST /api/analyze/{code}`
-- `GET /api/analyze/queue`
-- `GET /api/analyze/{code}/status`
-- `GET /api/analyze/{code}/log/today`
-- `POST /api/analyze/{code}/report`
-- `POST /api/analyze/{code}/interactive`
-- `GET /api/analyze/{code}/stream`
-- `POST /api/analyze/{code}/respond`
-- `DELETE /api/analyze/{code}/session`
-- `GET /api/reports`
-- `GET /api/reports/{code}`
-- `GET /api/reports/{code}/latest`
-- `POST /api/reports/rescan`
-
-### Portfolio and Dashboard
-
-- `GET /api/portfolio`
-- `GET /api/portfolio/profit-history`
-- `POST /api/portfolio/trade`
-- `GET /api/portfolio/trades`
-- `GET /api/dashboard`
-- `GET /api/dashboard/delivery-records`
-- `GET /api/dashboard/notifications`
-
-### Settings and Lookup
-
-- `GET /api/settings`
-- `PUT /api/settings`
-- `POST /api/settings/test-email`
-- `POST /api/settings/test-wechat`
-- `GET /api/stocks/resolve`
-
-## Project Structure
-
-```text
-.
-├── backend/
-│   ├── api/            # FastAPI route modules
-│   ├── core/           # Analysis, agent runtime, scheduler, notification, report logic
-│   ├── data/           # SQLite databases and backups
-│   ├── db/             # SQLAlchemy models and session setup
-│   ├── reports/        # Generated Markdown/HTML reports and Claude settings
-│   └── main.py         # Backend entry point
-├── frontend/
-│   ├── src/
-│   │   ├── api/        # Axios API wrapper
-│   │   ├── components/ # Vue UI components
-│   │   ├── utils/      # Frontend helpers and utility tests
-│   │   └── views/      # Dashboard, stocks, reports, portfolio, settings pages
-│   └── package.json
-├── docs/               # Design notes and implementation plans
-├── start.sh            # Local helper script for Linux/macOS shells
-├── start.bat           # Local helper script for Windows
-└── requirements.txt    # Python dependencies used by the backend runtime
-```
-
-## Testing and Quality Checks
-
-Current repository evidence shows frontend utility tests in `frontend/src/utils/*.test.js`.
-
-Run them with:
-
-```bash
-node --test frontend/src/utils/*.test.js
-```
 
 ## Known Boundaries
 
