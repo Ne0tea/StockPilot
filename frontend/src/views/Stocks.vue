@@ -2,7 +2,7 @@
   <div class="stocks-page">
     <PageHeader title="股票管理" subtitle="管理您的自选股列表">
       <template #actions>
-        <el-button @click="analyzeAll" class="btn-orange">
+        <el-button @click="handleAnalyzeAll" class="btn-orange">
           <el-icon style="margin-right:4px"><VideoPlay /></el-icon>
           全部分析
         </el-button>
@@ -120,6 +120,7 @@
                     🤖
                   </button>
                 </div>
+                <div class="row-actions-spacer"></div>
                 <button
                   class="icon-btn icon-btn-warning"
                   :disabled="analysisState[row.stock_code]==='running'"
@@ -284,6 +285,7 @@ import PageHeader from '../components/PageHeader.vue'
 import SectionCard from '../components/SectionCard.vue'
 import AgentChatDialog from '../components/AgentChatDialog.vue'
 import {
+  buildBulkAnalyzeConfirmationText,
   getBulkAnalyzableStocks,
 } from '../utils/reportHelpers'
 import { applyResolvedStock, buildLookupFailureMessage, buildLookupQuery } from '../utils/stockLookup'
@@ -955,6 +957,24 @@ async function analyzeAll() {
   }
 }
 
+async function handleAnalyzeAll() {
+  try {
+    await ElMessageBox.confirm(
+      buildBulkAnalyzeConfirmationText(),
+      '全部分析',
+      {
+        confirmButtonText: '确认启动',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+
+  await analyzeAll()
+}
+
 /**
  * Run one auto-respond analysis with an isolated SSE listener so multiple
  * stocks can stream in parallel without clobbering the shared eventSource.
@@ -1438,7 +1458,7 @@ function resetStockPageState() {
 .row-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 6px;
   width: 100%;
 }

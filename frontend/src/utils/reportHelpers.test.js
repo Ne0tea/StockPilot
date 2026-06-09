@@ -1,7 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { getBulkAnalyzableStocks } from './reportHelpers.js'
+import {
+  buildBulkAnalyzeConfirmationText,
+  getBulkAnalyzableStocks,
+} from './reportHelpers.js'
 
 test('bulk analyzable stocks only skip running analyses and existing today reports', () => {
   const stocks = [
@@ -22,5 +25,12 @@ test('bulk analyzable stocks only skip running analyses and existing today repor
   assert.deepEqual(
     getBulkAnalyzableStocks(stocks, todayReportMap, analysisState),
     [{ stock_code: '600021' }],
+  )
+})
+
+test('builds the bulk analyze confirmation text', () => {
+  assert.equal(
+    buildBulkAnalyzeConfirmationText(),
+    '同时启动多项分析容易触发Api限制导致分析失败，确认启动？',
   )
 })

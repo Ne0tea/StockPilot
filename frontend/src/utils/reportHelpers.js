@@ -33,6 +33,10 @@ export function buildReportUrl(reportFilePath) {
   return `/${normalized.replace(/^\/+/, '')}`
 }
 
+export function buildBulkAnalyzeConfirmationText() {
+  return '同时启动多项分析容易触发Api限制导致分析失败，确认启动？'
+}
+
 export function getBulkAnalyzableStocks(stocks, todayReportMap, analysisState) {
   if (!Array.isArray(stocks)) {
     return []
