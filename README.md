@@ -196,14 +196,6 @@ It depends on these saved settings:
 - `agent_base_url`
 - `agent_model`
 
-Main endpoints:
-
-- `GET /api/agent/skills`
-- `POST /api/agent/chat/start`
-- `POST /api/agent/chat/start-stream`
-- `POST /api/agent/chat/message`
-- `GET /api/agent/chat/{session_id}/stream`
-
 ### Notifications and Scheduling
 
 The Settings page persists configuration in the `settings` table and updates the running scheduler immediately when `schedule_time` changes.
