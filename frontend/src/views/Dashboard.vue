@@ -17,12 +17,17 @@
               <span class="score-badge" :class="scoreClass(row.score_total)">{{ row.score_total }}/10</span>
             </template>
           </el-table-column>
-          <el-table-column prop="recommendation" label="评级" min-width="100">
+          <el-table-column prop="recommendation" label="操作" min-width="100">
             <template #default="{row}">
-              <span class="action-tag" :class="recTagClass(row.recommendation)">{{ row.recommendation || '—' }}</span>
+              <button
+                class="action-tag action-link"
+                :class="[recTagClass(row.recommendation), { 'is-clickable': canOpenTodayReport(row) }]"
+                :disabled="!canOpenTodayReport(row)"
+                @click="openReport(row)"
+              >{{ row.recommendation || '—' }}</button>
             </template>
           </el-table-column>
-          <el-table-column prop="price" label="报告价格" min-width="180">
+          <el-table-column prop="price" label="今日价格" min-width="180">
             <template #default="{row}">
               <ReportPriceCell :row="row" @analyze="goAnalyze(row.code)" />
             </template>
@@ -36,7 +41,7 @@
         </div>
       </SectionCard>
 
-      <SectionCard title="持仓股操作建议" :badge="`共 ${dashboard.holding_recommendations?.length || 0} 只`" dot-color="var(--primary)">
+      <SectionCard title="持仓股" :badge="`共 ${dashboard.holding_recommendations?.length || 0} 只`" dot-color="var(--primary)">
         <el-table :data="dashboard.holding_recommendations" :header-cell-style="tableHeaderStyle">
           <el-table-column prop="name" label="股票" min-width="100">
             <template #default="{row}">
@@ -50,7 +55,12 @@
           </el-table-column>
           <el-table-column prop="action" label="操作" min-width="90">
             <template #default="{row}">
-              <span class="action-tag" :class="actionTagClass(row.action)">{{ row.action || '—' }}</span>
+              <button
+                class="action-tag action-link"
+                :class="[actionTagClass(row.action), { 'is-clickable': canOpenTodayReport(row) }]"
+                :disabled="!canOpenTodayReport(row)"
+                @click="openReport(row)"
+              >{{ row.action || '—' }}</button>
             </template>
           </el-table-column>
           <el-table-column prop="cost_price" label="成本价" min-width="100">
@@ -91,6 +101,7 @@ import SectionCard from '../components/SectionCard.vue'
 import CostPieChart from '../components/CostPieChart.vue'
 import ProfitChart from '../components/ProfitChart.vue'
 import ReportPriceCell from '../components/ReportPriceCell.vue'
+import { buildReportUrl, getTodayDateString } from '../utils/reportHelpers'
 
 const router = useRouter()
 
@@ -98,6 +109,7 @@ const tableHeaderStyle = { background: '#F8F9FA', color: '#999', fontSize: '12px
 
 const dashboard = ref({ holding_recommendations: [], watchlist_signals: [], portfolio_summary: {} })
 const profitHistory = ref([])
+const todayDate = getTodayDateString('Asia/Shanghai')
 
 const summaryCards = computed(() => [
   {
@@ -132,6 +144,21 @@ onMounted(async () => {
 function goAnalyze(stockCode) {
   if (!stockCode) return
   router.push({ path: '/stocks', query: { highlight: stockCode } })
+}
+
+function canOpenTodayReport(row) {
+  return Boolean(
+    row?.report_file_path
+    && row?.date
+    && row.date === todayDate
+  )
+}
+
+function openReport(row) {
+  if (!canOpenTodayReport(row)) return
+  const reportUrl = buildReportUrl(row.report_file_path)
+  if (!reportUrl) return
+  window.open(reportUrl, '_blank', 'noopener,noreferrer')
 }
 
 function formatMoney(value) {
@@ -195,11 +222,23 @@ function recTagClass(rec) {
   color: var(--color-down);
 }
 .action-tag {
+  border: none;
   display: inline-block;
   padding: 2px 10px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 600;
+}
+.action-link {
+  cursor: default;
+}
+.action-link.is-clickable {
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.action-link:disabled {
+  opacity: 1;
 }
 .tag-up {
   background: var(--color-up-light);

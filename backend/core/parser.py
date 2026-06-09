@@ -162,17 +162,23 @@ def parse_report_markdown(content: str) -> ReportSummary:
 
     # ── Action suggestion ────────────────────────────────────────────
     action_patterns = [
-        (r"建议\s*[：:]\s*(买入|卖出|持有|加仓|减仓|观望)", None),
-        (r"(强烈推荐|推荐买入)", "买入"),
-        (r"(观望等待)", "观望"),
-        (r"(谨慎操作)", "减仓"),
-        (r"(建议回避)", "卖出"),
+        r"(?:^|\n)\s*(?:操作建议|操作|建议)\s*[：:]\s*(买入|卖出|持有|加仓|减仓|观望等待|观望)",
     ]
-    for pattern, override in action_patterns:
+    for pattern in action_patterns:
         m = re.search(pattern, content)
         if m:
-            summary.action = override or m.group(1)
+            summary.action = m.group(1)
             break
+
+    if not summary.action and summary.recommendation:
+        recommendation_to_action = {
+            "强烈推荐": "买入",
+            "推荐买入": "买入",
+            "观望等待": "观望",
+            "谨慎操作": "减仓",
+            "建议回避": "卖出",
+        }
+        summary.action = recommendation_to_action.get(summary.recommendation, summary.action)
 
     # ── Investment conclusion / reason ───────────────────────────────
     # The template format is:

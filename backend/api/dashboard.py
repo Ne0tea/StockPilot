@@ -15,6 +15,7 @@ def _latest_report_item(code, name, report):
         "stop_loss_price": report.stop_loss_price,
         "entry_price": report.entry_price,
         "current_price": report.current_price,
+        "report_file_path": report.report_file_path or "",
         "date": report.date.isoformat() if report.date else None,
     }
 
@@ -47,6 +48,7 @@ def get_dashboard(db: Session = Depends(get_db)):
                     "action": None, "reason": None,
                     "target_price": None, "stop_loss_price": None,
                     "entry_price": None, "current_price": None,
+                    "report_file_path": "",
                     "date": None,
                     "cost": round((pos.shares or 0) * (pos.cost_price or 0), 2),
                     "cost_price": pos.cost_price,
@@ -76,6 +78,7 @@ def get_dashboard(db: Session = Depends(get_db)):
                 "action": None, "reason": None,
                 "target_price": None, "stop_loss_price": None,
                 "entry_price": None, "current_price": None,
+                "report_file_path": "",
                 "date": None,
                 "has_report": False,
                 "price": None,
