@@ -258,15 +258,11 @@ The backend applies this value to the `TICKFLOW_API_KEY` environment variable at
 - Daily report generation depends on a local `claude` executable.
 - Interactive analysis also depends on Claude-based local tooling.
 - Specialist agent analysis requires OpenAI-compatible credentials saved in Settings.
-- No `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, or `CHANGELOG.md` file was found at the repository root.
+- No standalone `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, or `CHANGELOG.md` file was found at the repository root.
 - No CI workflow or Docker setup was found in the repository root.
 
-## README Maintenance
+## License
 
-Update this README when any of the following change:
+This project can be used freely, including personal use, learning, modification, and redistribution within your own workflow.
 
-- API routes under `backend/api/`
-- startup commands or dependency sources
-- settings fields persisted in `db.models.Settings`
-- report storage paths or database locations
-- frontend routes or major user-visible pages
+There is currently no standalone `LICENSE` file in the repository root. If you want that permission to be formalized for external distribution or public reuse, add a root-level `LICENSE` file with the exact terms you want to publish.
