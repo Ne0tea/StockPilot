@@ -173,7 +173,7 @@ Outputs:
 - Structured report rows in SQLite
 - Markdown report files
 - HTML reports when generated
-- Queue and status information for the frontend
+- Analysis status information for the frontend
 
 ### Interactive Analysis
 

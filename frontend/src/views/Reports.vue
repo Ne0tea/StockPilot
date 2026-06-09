@@ -113,7 +113,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getWatchlist, getReports, rescanReports, triggerAnalysis } from '../api'
+import { getWatchlist, getReports, rescanReports, startInteractiveAnalysisWithMode } from '../api'
 import { buildReportRouteQuery, filterReportsByCodeAndDateRange } from '../utils/reportFilters'
 import { buildReportUrl } from '../utils/reportHelpers'
 import { RefreshRight, Document, TrendCharts, Calendar, Star, View } from '@element-plus/icons-vue'
@@ -252,8 +252,8 @@ async function reanalyzeReport() {
   if (!pendingReport.value?.stock_code) return
   reanalyzing.value = true
   try {
-    await triggerAnalysis(pendingReport.value.stock_code)
-    ElMessage.success(`已开始重新分析 ${pendingReport.value.stock_name || pendingReport.value.stock_code}`)
+    await startInteractiveAnalysisWithMode(pendingReport.value.stock_code, true)
+    ElMessage.success(`已开始一键重新分析 ${pendingReport.value.stock_name || pendingReport.value.stock_code}`)
     actionDialogVisible.value = false
   } finally {
     reanalyzing.value = false

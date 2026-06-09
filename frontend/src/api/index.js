@@ -41,8 +41,6 @@ export const getReports = (code, limit = 30) =>
 export const rescanReports = (code = '') =>
   api.post(`/reports/rescan${code ? `?code=${encodeURIComponent(code)}` : ''}`, null, { timeout: 120000 })
 export const getLatestReport = (code) => api.get(`/reports/${code}/latest`)
-export const triggerAnalysis = (code) => api.post(`/analyze/${code}`, null, { timeout: 60000 })
-export const triggerAll = () => api.post('/analyze/all', null, { timeout: 120000 })
 export const getAnalysisStatus = (code) => api.get(`/analyze/${code}/status`)
 export const getTodayLog = (code) => api.get(`/analyze/${code}/log/today`)
 export const getPortfolio = () => api.get('/portfolio', { timeout: 60000 })

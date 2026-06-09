@@ -6,14 +6,8 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from core.analyzer import (
-    REPORTS_DIR,
-    active_analysis_workers,
-    clear_queue_state,
-    request_cancel_for_all_workers,
-    worker_lock,
-)
 from core.interactive import _active_sessions, _sessions_lock
+from core.report_storage import REPORTS_DIR
 from db.models import AnalysisTaskState, Portfolio, StockReport, TradeLog, Watchlist
 
 SESSION_CANCEL_TIMEOUT_SECONDS = 5.0
@@ -104,8 +98,6 @@ def reset_stock_workspace(db: Session, reports_root: Optional[str] = None) -> di
         begin_reset()
         reset_started = True
         result["cancelled_sessions"] = _drain_active_sessions()
-        _drain_legacy_analysis_workers()
-        clear_queue_state()
         db.query(AnalysisTaskState).delete()
         db.commit()
 
@@ -143,8 +135,8 @@ def clear_all_analysis_data(db: Session, reports_root: Optional[str] = None) -> 
     Unlike ``reset_stock_workspace`` (which also wipes watchlist/portfolio/trade
     logs), this only removes analysis artefacts: StockReport rows plus the
     on-disk report files (per-code dirs and root ``*.md``/``*.html``). Running
-    sessions are cancelled and the queue is cleared first, under the same reset
-    barrier so no in-flight analysis can write back mid-purge.
+    sessions are cancelled first, under the same reset barrier so no in-flight
+    analysis can write back mid-purge.
     """
     reports_path = reports_root or REPORTS_DIR
     result = {
@@ -160,8 +152,6 @@ def clear_all_analysis_data(db: Session, reports_root: Optional[str] = None) -> 
         begin_reset()
         reset_started = True
         result["cancelled_sessions"] = _drain_active_sessions(force=True)
-        _drain_legacy_analysis_workers(force=True)
-        clear_queue_state()
         db.query(AnalysisTaskState).delete()
         db.commit()
 
@@ -189,7 +179,7 @@ def clear_all_analysis_data(db: Session, reports_root: Optional[str] = None) -> 
 def clear_stock_analysis_data(db: Session, stock_code: str, reports_root: Optional[str] = None) -> dict:
     """Delete a single stock's analysis data (reports + on-disk files).
 
-    The watchlist entry is preserved. Any running/queued session for this code
+    The watchlist entry is preserved. Any running session for this code
     is cancelled first so the purge cannot race a writer.
     """
     reports_path = reports_root or REPORTS_DIR
@@ -206,8 +196,6 @@ def clear_stock_analysis_data(db: Session, stock_code: str, reports_root: Option
         begin_reset()
         reset_started = True
         result["cancelled_sessions"] = _drain_active_sessions(force=True)
-        _drain_legacy_analysis_workers(force=True)
-        clear_queue_state()
         db.query(AnalysisTaskState).filter(AnalysisTaskState.stock_code == stock_code).delete()
         db.commit()
 
@@ -268,39 +256,6 @@ def _snapshot_active_sessions() -> list[tuple[str, object]]:
         return list(_active_sessions.items())
 
 
-def _drain_legacy_analysis_workers(force: bool = False) -> int:
-    deadline = time.monotonic() + SESSION_CANCEL_TIMEOUT_SECONDS
-
-    while True:
-        workers = request_cancel_for_all_workers()
-        if not workers:
-            return 0
-        try:
-            _wait_for_legacy_workers(workers, deadline)
-        except TimeoutError:
-            if not force:
-                raise
-            _force_remove_legacy_workers()
-            return len(workers)
-        if not _snapshot_legacy_workers():
-            return len(workers)
-
-
-def _force_remove_legacy_workers() -> None:
-    with worker_lock:
-        for worker in list(active_analysis_workers.values()):
-            try:
-                worker.done_event.set()
-            except Exception:
-                pass
-        active_analysis_workers.clear()
-
-
-def _snapshot_legacy_workers() -> list[object]:
-    with worker_lock:
-        return list(active_analysis_workers.values())
-
-
 def _wait_for_cancelled_sessions(session_pairs: list[tuple[str, object]], deadline: float) -> None:
     while True:
         if all(_session_has_settled(session) for _, session in session_pairs):
@@ -316,15 +271,6 @@ def _session_has_settled(session: object) -> bool:
         return done_event.is_set()
 
     return getattr(session, "is_running", True) is False
-
-
-def _wait_for_legacy_workers(workers: list[object], deadline: float) -> None:
-    while True:
-        if all(worker.done_event.is_set() for worker in workers):
-            return
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Timed out waiting for legacy analysis workers to cancel")
-        time.sleep(SESSION_CANCEL_POLL_SECONDS)
 
 
 def _remove_settled_sessions(session_pairs: list[tuple[str, object]]) -> None:

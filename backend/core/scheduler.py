@@ -2,7 +2,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from db.database import SessionLocal
 from db.models import MailDeliveryRecord, Settings, Watchlist, StockReport, Portfolio
 from core.notify import send_email, send_wechat, build_daily_report_markdown, email_configured, wechat_configured
-from core.analyzer import cleanup_old_reports
+from core.report_storage import cleanup_old_reports
 from datetime import date
 import logging
 

@@ -43,6 +43,6 @@ export function getBulkAnalyzableStocks(stocks, todayReportMap, analysisState) {
     if (!code) return false
     if (todayReportMap?.[code]) return false
     const state = analysisState?.[code]
-    return state !== 'running' && state !== 'queued'
+    return state !== 'running'
   })
 }

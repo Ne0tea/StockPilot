@@ -25,6 +25,7 @@ from core.session_logger import SessionLogWriter
 
 
 QUESTION_TIMEOUT_SECONDS = 30.0
+MAX_HTML_RETRY_ATTEMPTS = 1
 
 LOGIN_QUESTION_OPTIONS = ["已登录", "继续分析", "跳过"]
 AFFIRMATIVE_RESPONSES = {"已登录", "继续分析", "登录了", "allow", "允许", "yes", "y"}
@@ -34,13 +35,6 @@ NEGATIVE_RESPONSES = {"跳过", "没登录", "未登录", "不想登录", "deny"
 # Active sessions: {code: InteractiveSession}
 _active_sessions: dict[str, "InteractiveSession"] = {}
 _sessions_lock = threading.Lock()
-
-_bulk_pending: list[tuple[str, str]] = []   # FIFO of (code, name) not yet started
-_bulk_queued_codes: list[str] = []          # codes still waiting (snapshot view)
-_bulk_running_code: Optional[str] = None
-_bulk_running_name: str = ""
-_bulk_lock = threading.Lock()
-_bulk_dispatcher_running = False
 
 
 def acquire_analysis_start_slot() -> bool:
@@ -155,6 +149,7 @@ class InteractiveSession:
         self._pending_question: Optional[dict] = None
         self.final_status = "running"
         self.final_message = ""
+        self._html_retry_count = 0
         self._results_task_started = False
         self._log_writer = SessionLogWriter(
             reports_root=ensure_reports_root(),
@@ -289,6 +284,9 @@ class InteractiveSession:
                     return
 
                 if next_user_reply is None:
+                    if self._handle_missing_html_after_turn(move_generated_report_html(self.code)):
+                        outgoing_message = self._build_missing_html_retry_message()
+                        continue
                     self._put_event({"type": "status", "text": "正在整理最终报告..."})
                     return
 
@@ -313,6 +311,36 @@ class InteractiveSession:
         response_text = normalize_answer(answer, question["default"])
         self._emit_user_response(question, response_text, meta)
         return response_text
+
+    def _build_missing_html_retry_message(self) -> str:
+        return (
+            f"你还没有生成 HTML 文件。现在不要重写 Markdown 报告，也不要补充解释。\n"
+            f"请只执行 HTML 生成步骤，并将文件写入 `{self.code}/{date.today().isoformat()}.html`。\n"
+            "完成后仅输出 `__ANALYSIS_DONE__`。"
+        )
+
+    def _handle_missing_html_after_turn(self, html_path: str) -> bool:
+        if html_path:
+            return False
+
+        if self._html_retry_count < MAX_HTML_RETRY_ATTEMPTS:
+            self._html_retry_count += 1
+            self._put_event(
+                {
+                    "type": "status",
+                    "text": "检测到 HTML 报告缺失，正在强制补生成一次...",
+                }
+            )
+            return True
+
+        self.final_message = "HTML报告缺失，已保存Markdown结果"
+        self._put_event(
+            {
+                "type": "status",
+                "text": self.final_message,
+            }
+        )
+        return False
 
     def _handle_stream_event(self, message: StreamEvent):
         event = message.event or {}
@@ -439,7 +467,7 @@ async def save_results(
     html_path: str = "",
     reset_generation: Optional[int] = None,
 ):
-    from core.analyzer import save_report_summary
+    from core.report_storage import save_report_summary
     from db.database import SessionLocal
 
     if session.final_status != "done":
@@ -475,7 +503,12 @@ async def save_results(
         if report is None:
             return
 
-        _persist_interactive_status(session.code, "done", run_mode="interactive")
+        _persist_interactive_status(
+            session.code,
+            "done",
+            run_mode="interactive",
+            message=session.final_message,
+        )
     finally:
         release_analysis_start_slot()
 

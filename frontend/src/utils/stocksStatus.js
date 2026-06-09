@@ -18,7 +18,6 @@ export function resolveTodayReportRecord(reports, today) {
 }
 
 export function getStocksStatusKind({ analysisValue, todayReport }) {
-  if (analysisValue === 'queued') return 'queued'
   if (analysisValue === 'running') return 'running'
   if (analysisValue === 'done') return 'done'
 

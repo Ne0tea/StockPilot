@@ -10,14 +10,6 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.analysis_task_state import get_task_status_for_code
-from core.analyzer import (
-    enqueue_many,
-    get_queue_position,
-    get_queue_snapshot,
-    save_report_html,
-    save_report_summary,
-    start_analysis,
-)
 from core.interactive import (
     get_session,
     mark_analysis_idle,
@@ -26,8 +18,9 @@ from core.interactive import (
     start_session,
 )
 from core.report_listing import list_reports, rescan_reports
+from core.report_storage import save_report_html, save_report_summary
 from core.stock_reset import acquire_analysis_start_slot, is_reset_in_progress, release_analysis_start_slot
-from db.database import get_db, SessionLocal
+from db.database import get_db
 from db.models import StockReport, Watchlist
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
@@ -43,53 +36,13 @@ class InteractIn(BaseModel):
 class InteractiveStartIn(BaseModel):
     auto_respond: bool = False
 
-@router.post("/analyze/all")
-def trigger_all(db: Session = Depends(get_db)):
-    if is_reset_in_progress():
-        return {"error": "系统正在初始化，请稍后重试"}
-    stocks = db.query(Watchlist).filter(Watchlist.is_active == True).all()
-    items = [(stock.stock_code, stock.name) for stock in stocks]
-    result = enqueue_many(items, SessionLocal)
-    return {
-        "ok": True,
-        "queued": result["queued"],
-        "skipped": result["skipped"],
-        "total": len(items),
-    }
-
-@router.post("/analyze/{code}")
-def trigger_analysis(code: str, db: Session = Depends(get_db)):
-    if is_reset_in_progress():
-        return {"error": "系统正在初始化，请稍后重试"}
-    stock = db.query(Watchlist).filter(Watchlist.stock_code == code, Watchlist.is_active == True).first()
-    if not stock:
-        return {"error": "Stock not in watchlist"}
-    result = start_analysis(stock.stock_code, stock.name, SessionLocal)
-    if not result.get("ok"):
-        reason = result.get("reason", "")
-        if reason == "reset_in_progress":
-            return {"error": "系统正在初始化，请稍后重试"}
-        return {"status": "running", "message": "分析正在进行中..."}
-    return {
-        "status": "queued",
-        "position": result["position"],
-        "message": f"已加入分析队列 {stock.name}",
-    }
-
-@router.get("/analyze/queue")
-def get_queue():
-    return get_queue_snapshot()
-
 @router.get("/analyze/{code}/status")
 def check_status(code: str, db: Session = Depends(get_db)):
-    snapshot = get_queue_snapshot()
     status, status_date = get_task_status_for_code(db, code)
     return {
         "code": code,
         "status": status,
         "status_date": status_date.isoformat(),
-        "queue_position": get_queue_position(code),
-        "queue_size": snapshot["size"],
     }
 
 @router.post("/analyze/{code}/report")

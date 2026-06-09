@@ -7,13 +7,13 @@ import {
   resolveTodayReportRecord,
 } from './stocksStatus.js'
 
-test('returns queued before any completed or failed state', () => {
+test('falls back to done when a non-running stale state still has a today html report', () => {
   assert.equal(
     getStocksStatusKind({
       analysisValue: 'queued',
       todayReport: { report_file_path: 'reports/002594/2026-06-04.html', html_status: 'ready' },
     }),
-    'queued',
+    'done',
   )
 })
 

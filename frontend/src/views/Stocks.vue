@@ -55,11 +55,7 @@
           </el-table-column>
           <el-table-column label="今日状态" width="120">
             <template #default="{row}">
-              <el-tag v-if="statusKind(row.stock_code)==='queued'" size="small" type="warning" class="status-tag">
-                <el-icon style="margin-right:4px"><Clock /></el-icon>
-                排队中
-              </el-tag>
-              <el-tag v-else-if="statusKind(row.stock_code)==='running'" size="small" type="info" class="status-tag">
+              <el-tag v-if="statusKind(row.stock_code)==='running'" size="small" type="info" class="status-tag">
                 <el-icon class="is-loading" style="margin-right:4px"><Loading /></el-icon>
                 分析中
               </el-tag>
@@ -100,17 +96,16 @@
                 <div class="row-actions-group">
                   <button
                     class="icon-btn icon-btn-primary"
-                    :disabled="analysisState[row.stock_code]==='running' || analysisState[row.stock_code]==='queued'"
-                    :title="analysisState[row.stock_code]==='running' ? '分析中' : analysisState[row.stock_code]==='queued' ? '排队中' : (hasTodayReport(row.stock_code) ? '重新生成报告（交互分析）' : '交互分析')"
+                    :disabled="analysisState[row.stock_code]==='running'"
+                    :title="analysisState[row.stock_code]==='running' ? '分析中' : (hasTodayReport(row.stock_code) ? '重新生成报告（交互分析）' : '交互分析')"
                     @click.stop="startAnalysis(row)"
                   >
                     <el-icon v-if="analysisState[row.stock_code]==='running'" class="is-loading"><Loading /></el-icon>
-                    <el-icon v-else-if="analysisState[row.stock_code]==='queued'"><Clock /></el-icon>
                     <el-icon v-else><VideoPlay /></el-icon>
                   </button>
                   <button
                     class="icon-btn icon-btn-orange"
-                    :disabled="analysisState[row.stock_code]==='running' || analysisState[row.stock_code]==='queued'"
+                    :disabled="analysisState[row.stock_code]==='running'"
                     :title="hasTodayReport(row.stock_code) ? '⚡ 重新生成报告（一键分析）' : '⚡ 一键分析'"
                     @click.stop="startQuickAnalysis(row)"
                   >
@@ -127,7 +122,7 @@
                 </div>
                 <button
                   class="icon-btn icon-btn-warning"
-                  :disabled="analysisState[row.stock_code]==='running' || analysisState[row.stock_code]==='queued'"
+                  :disabled="analysisState[row.stock_code]==='running'"
                   title="清理该股票全部分析报告"
                   @click.stop="handleClearStockAnalysis(row)"
                 >
@@ -283,7 +278,7 @@ import {
   getTodayLog,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Loading, VideoPlay, Delete, Plus, Clock, Brush } from '@element-plus/icons-vue'
+import { Loading, VideoPlay, Delete, Plus, Brush } from '@element-plus/icons-vue'
 import ScoreChart from '../components/ScoreChart.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SectionCard from '../components/SectionCard.vue'

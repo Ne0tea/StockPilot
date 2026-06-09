@@ -9,7 +9,7 @@ from db.models import AnalysisTaskState
 
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-ACTIVE_STATUSES = {"queued", "running"}
+ACTIVE_STATUSES = {"running"}
 
 
 def shanghai_today(now: datetime | None = None) -> date:
