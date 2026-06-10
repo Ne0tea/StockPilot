@@ -59,7 +59,13 @@
                 <el-icon class="is-loading" style="margin-right:4px"><Loading /></el-icon>
                 分析中
               </el-tag>
-              <el-tag v-else-if="statusKind(row.stock_code)==='done'" size="small" class="status-tag status-done" @click.stop="goReport(row.stock_code)">
+              <el-tag
+                v-else-if="statusKind(row.stock_code)==='done'"
+                size="small"
+                class="status-tag"
+                :class="{ 'status-done': canPreviewTodayReport(row.stock_code) }"
+                @click.stop="openTodayReportPreview(row.stock_code)"
+              >
                 ✓ 完成
               </el-tag>
               <el-tag v-else-if="statusKind(row.stock_code)==='error'" size="small" type="danger" class="status-tag">
@@ -269,7 +275,6 @@
 
 <script setup>
 import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
 import {
   getWatchlist, addStock, removeStock, resetWatchlist,
   clearAllAnalysisData, clearStockAnalysisData,
@@ -285,8 +290,10 @@ import PageHeader from '../components/PageHeader.vue'
 import SectionCard from '../components/SectionCard.vue'
 import AgentChatDialog from '../components/AgentChatDialog.vue'
 import {
+  buildTodayHtmlReportPreviewUrl,
   buildBulkAnalyzeConfirmationText,
   getBulkAnalyzableStocks,
+  hasReadyTodayHtmlReport,
 } from '../utils/reportHelpers'
 import { applyResolvedStock, buildLookupFailureMessage, buildLookupQuery } from '../utils/stockLookup'
 import {
@@ -322,8 +329,6 @@ import {
   hasShanghaiDayChanged,
   resolveTodayReportRecord,
 } from '../utils/stocksStatus.js'
-
-const router = useRouter()
 
 // ── Stock list state ───────────────────────────────────────────────────────
 const form = ref({ stock_code: '', name: '', market: 'sh' })
@@ -1099,10 +1104,6 @@ function connectBulkSSE(code, name, onEnd) {
   bulkSessions.set(code, teardown)
   open()
 }
-function goReport(code) {
-  router.push({ path: '/reports', query: { code } })
-}
-
 function statusKind(code) {
   return getStocksStatusKind({
     analysisValue: analysisState[code],
@@ -1113,6 +1114,19 @@ function statusKind(code) {
 function hasTodayReport(code) {
   const report = todayReportMap[code]
   return Boolean(report?.report_file_path && report?.html_status === 'ready')
+}
+
+function canPreviewTodayReport(code) {
+  return hasReadyTodayHtmlReport(todayReportMap[code], todayDateRef.value)
+}
+
+function openTodayReportPreview(code) {
+  const previewUrl = buildTodayHtmlReportPreviewUrl(todayReportMap[code], todayDateRef.value)
+  if (!previewUrl) {
+    return
+  }
+  reportUrl.value = previewUrl
+  reportDialogVisible.value = true
 }
 
 function hasTodayMarkdownResult(code) {

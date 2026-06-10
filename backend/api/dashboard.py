@@ -9,6 +9,10 @@ def _latest_report_item(code, name, report):
     return {
         "code": code, "name": name,
         "score_total": report.score_total,
+        "score_fundamental": report.score_fundamental,
+        "score_news": report.score_news,
+        "score_capital": report.score_capital,
+        "score_technical": report.score_technical,
         "recommendation": report.recommendation,
         "action": report.action, "reason": report.reason,
         "target_price": report.target_price,
@@ -45,6 +49,8 @@ def get_dashboard(db: Session = Depends(get_db)):
                 {
                     "code": pos.stock_code, "name": pos.stock_name or "",
                     "score_total": None, "recommendation": None,
+                    "score_fundamental": None, "score_news": None,
+                    "score_capital": None, "score_technical": None,
                     "action": None, "reason": None,
                     "target_price": None, "stop_loss_price": None,
                     "entry_price": None, "current_price": None,
@@ -75,6 +81,8 @@ def get_dashboard(db: Session = Depends(get_db)):
             item = {
                 "code": stock.stock_code, "name": stock.name,
                 "score_total": None, "recommendation": None,
+                "score_fundamental": None, "score_news": None,
+                "score_capital": None, "score_technical": None,
                 "action": None, "reason": None,
                 "target_price": None, "stop_loss_price": None,
                 "entry_price": None, "current_price": None,

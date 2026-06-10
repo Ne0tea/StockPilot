@@ -33,8 +33,38 @@ export function buildReportUrl(reportFilePath) {
   return `/${normalized.replace(/^\/+/, '')}`
 }
 
+export function hasReadyTodayHtmlReport(report, today = '') {
+  return Boolean(
+    report
+    && report.date
+    && (!today || report.date === today)
+    && report.html_status === 'ready'
+    && report.report_file_path,
+  )
+}
+
+export function buildTodayHtmlReportPreviewUrl(report, today = '') {
+  if (!hasReadyTodayHtmlReport(report, today)) {
+    return ''
+  }
+  return buildReportUrl(report.report_file_path)
+}
+
 export function buildBulkAnalyzeConfirmationText() {
   return '同时启动多项分析容易触发Api限制导致分析失败，确认启动？'
+}
+
+export function formatCompactScore(value) {
+  if (value === null || value === undefined || value === '') {
+    return '—'
+  }
+
+  const num = Number(value)
+  if (Number.isNaN(num)) {
+    return '—'
+  }
+
+  return Number.isInteger(num) ? String(num) : String(num)
 }
 
 export function getBulkAnalyzableStocks(stocks, todayReportMap, analysisState) {

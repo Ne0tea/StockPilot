@@ -17,6 +17,26 @@
               <span class="score-badge" :class="scoreClass(row.score_total)">{{ row.score_total }}/10</span>
             </template>
           </el-table-column>
+          <el-table-column prop="score_fundamental" label="基本面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_fundamental) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="score_news" label="新闻面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_news) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="score_capital" label="资金面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_capital) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="score_technical" label="技术面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_technical) }}</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="recommendation" label="操作" min-width="100">
             <template #default="{row}">
               <button
@@ -51,6 +71,26 @@
           <el-table-column prop="score_total" label="评分" min-width="90">
             <template #default="{row}">
               <span class="score-badge" :class="scoreClass(row.score_total)">{{ row.score_total }}/10</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="score_fundamental" label="基本面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_fundamental) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="score_news" label="新闻面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_news) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="score_capital" label="资金面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_capital) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="score_technical" label="技术面" width="74" align="center">
+            <template #default="{row}">
+              <span class="compact-score">{{ formatCompactScore(row.score_technical) }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="action" label="操作" min-width="90">
@@ -101,7 +141,7 @@ import SectionCard from '../components/SectionCard.vue'
 import CostPieChart from '../components/CostPieChart.vue'
 import ProfitChart from '../components/ProfitChart.vue'
 import ReportPriceCell from '../components/ReportPriceCell.vue'
-import { buildReportUrl, getTodayDateString } from '../utils/reportHelpers'
+import { buildReportUrl, formatCompactScore, getTodayDateString } from '../utils/reportHelpers'
 
 const router = useRouter()
 
@@ -208,6 +248,14 @@ function recTagClass(rec) {
   border-radius: 12px;
   font-size: 13px;
   font-weight: 600;
+}
+.compact-score {
+  display: inline-block;
+  min-width: 24px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
 }
 .score-high {
   background: var(--color-up-light);
