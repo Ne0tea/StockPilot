@@ -25,6 +25,16 @@ def build_report_paths(stock_code: str, report_date: Optional[date] = None) -> t
     return absolute_path, relative_path
 
 
+def build_report_instruction_target(stock_code: str, report_date: Optional[date] = None) -> str:
+    """Absolute HTML target path passed to the agent.
+
+    The backend only serves files under ``REPORTS_DIR``; using an absolute path
+    avoids the agent resolving ``<code>/<date>.html`` relative to its home dir.
+    """
+    absolute_path, _ = build_report_paths(stock_code, report_date)
+    return absolute_path
+
+
 _UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|]')
 
 
@@ -104,6 +114,12 @@ def move_generated_report_html(stock_code: str, report_date: Optional[date] = No
 
     nested_pattern = os.path.join(ensure_reports_root(), "reports", stock_code, "*.html")
     candidates.extend(sorted(glob.glob(nested_pattern), reverse=True))
+
+    home_exact = os.path.expanduser(
+        os.path.join("~", stock_code, f"{report_date.isoformat()}.html")
+    )
+    if os.path.exists(home_exact):
+        candidates.append(home_exact)
 
     root_pattern = os.path.join(ensure_reports_root(), f"*{stock_code}*.html")
     candidates.extend(sorted(glob.glob(root_pattern), reverse=True))

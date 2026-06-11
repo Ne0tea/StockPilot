@@ -17,6 +17,7 @@ from claude_agent_sdk.types import AssistantMessage, ResultMessage, StreamEvent,
 
 from core.analysis_task_state import shanghai_today, upsert_task_status
 from core.report_renderer import (
+    build_report_instruction_target,
     ensure_reports_root,
     extract_report_markdown,
     move_generated_report_html,
@@ -243,6 +244,7 @@ class InteractiveSession:
             include_partial_messages=True,
         )
 
+        html_target_path = build_report_instruction_target(self.code)
         outgoing_message = (
             f"分析股票 {self.name}({self.code})，请生成完整分析报告。\n"
             "\n"
@@ -256,9 +258,8 @@ class InteractiveSession:
             "   遇到需要决策的分支，按skill 的默认推荐路径继续执行，不要停下等待。\n"
             "3. 工具调用一律视为已授权，按 skill 内置默认参数直接调用，不要解释“是否使用某工具”。\n"
             "4. 失败处理：单次工具失败按 skill 重试一次，仍失败则在最终报告“数据来源状态”表格中""标注为【失败】并继续推进，不要中断流程，不要询问用户。\n"
-            "5. 输出顺序固定：先在对话中完整输出 Markdown 报告 → 再生成 HTML 报告并写入当前工作目录下的 "
-            f"`{self.code}/{date.today().isoformat()}.html`"
-            "（当前工作目录就是 reports 根目录；禁止再额外套一层 reports/ 子目录）。\n"
+            "5. 输出顺序固定：先在对话中完整输出 Markdown 报告 → 再生成 HTML 报告并写入 "
+            f"`{html_target_path}`"
             "6. 全部完成后，仅追加一行：`__ANALYSIS_DONE__`，不要再问用户任何问题。\n"
         )
         self._put_event({"type": "status", "text": "正在启动分析会话..."})
@@ -313,9 +314,10 @@ class InteractiveSession:
         return response_text
 
     def _build_missing_html_retry_message(self) -> str:
+        html_target_path = build_report_instruction_target(self.code)
         return (
             f"你还没有生成 HTML 文件。现在不要重写 Markdown 报告，也不要补充解释。\n"
-            f"请只执行 HTML 生成步骤，并将文件写入 `{self.code}/{date.today().isoformat()}.html`。\n"
+            f"请只执行 HTML 生成步骤，并将文件写入后端指定的绝对路径 `{html_target_path}`。\n"
             "完成后仅输出 `__ANALYSIS_DONE__`。"
         )
 
