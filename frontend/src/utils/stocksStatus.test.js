@@ -2,10 +2,18 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  canDeleteAnalysisSession,
   getStocksStatusKind,
   hasShanghaiDayChanged,
   resolveTodayReportRecord,
 } from './stocksStatus.js'
+
+test('only allows deleting an analysis session while stock status is running', () => {
+  assert.equal(canDeleteAnalysisSession('running'), true)
+  assert.equal(canDeleteAnalysisSession('done'), false)
+  assert.equal(canDeleteAnalysisSession('error'), false)
+  assert.equal(canDeleteAnalysisSession('idle'), false)
+})
 
 test('falls back to done when a non-running stale state still has a today html report', () => {
   assert.equal(

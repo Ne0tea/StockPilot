@@ -10,9 +10,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.analysis_task_state import get_task_status_for_code
+from core.analysis_cleanup import clear_today_analysis_artifacts
 from core.interactive import (
     get_session,
-    mark_analysis_idle,
     remove_session,
     respond_session,
     start_session,
@@ -168,14 +168,19 @@ async def respond_to_session(code: str, body: InteractIn):
 
 
 @router.delete("/analyze/{code}/session")
-async def cancel_session(code: str):
+async def cancel_session(code: str, db: Session = Depends(get_db)):
     """Cancel an active interactive session."""
     session = get_session(code)
     if session:
         session.cancel()
     remove_session(code)
-    mark_analysis_idle(code)
-    return {"ok": True}
+    cleanup = clear_today_analysis_artifacts(
+        db,
+        stock_code=code,
+        reports_root=str(REPORTS_DIR),
+        analysis_date=_date.today(),
+    )
+    return {"ok": True, "cleanup": cleanup}
 
 
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9._-]+$")

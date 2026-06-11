@@ -1,5 +1,9 @@
 import { getTodayDateString } from './reportHelpers.js'
 
+export function canDeleteAnalysisSession(statusKind) {
+  return statusKind === 'running'
+}
+
 export function resolveTodayReportRecord(reports, today) {
   if (!Array.isArray(reports) || !today) {
     return null

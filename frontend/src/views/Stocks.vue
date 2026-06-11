@@ -128,6 +128,14 @@
                 </div>
                 <div class="row-actions-spacer"></div>
                 <button
+                  class="icon-btn icon-btn-session"
+                  :disabled="!canDeleteSession(row.stock_code)"
+                  :title="canDeleteSession(row.stock_code) ? '删除分析 session' : '仅分析中时可删除 session'"
+                  @click.stop="handleDeleteAnalysisSession(row)"
+                >
+                  <el-icon><Delete /></el-icon>
+                </button>
+                <button
                   class="icon-btn icon-btn-warning"
                   :disabled="analysisState[row.stock_code]==='running'"
                   title="清理该股票全部分析报告"
@@ -325,6 +333,7 @@ import {
   todayDate as todayDateRef,
 } from '../stores/analysisStore'
 import {
+  canDeleteAnalysisSession,
   getStocksStatusKind,
   hasShanghaiDayChanged,
   resolveTodayReportRecord,
@@ -555,6 +564,44 @@ async function handleClearStockAnalysis(row) {
     ElMessage.success(`已清理 ${row.name} 的分析数据`)
   } catch (err) {
     ElMessage.error(`清理失败: ${err.message || err}`)
+  }
+}
+
+async function handleDeleteAnalysisSession(row) {
+  if (!canDeleteSession(row.stock_code)) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `将删除 ${row.name}（${row.stock_code}）当前“分析中”的 session，并终止本次分析。确认继续吗？`,
+      '删除分析 session',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+
+  try {
+    await cancelAnalysis(row.stock_code)
+
+    if (dialogStock.stock_code === row.stock_code) {
+      closeSSE()
+      isAnalyzing.value = false
+      pendingQuestion.value = null
+      userInput.value = ''
+      streamMessages.value.push({ type: 'status', text: '⚠️ 分析 session 已删除' })
+    }
+
+    await refreshAnalysisStatus(row.stock_code)
+    await refreshTodayLogState(row.stock_code)
+    ElMessage.success(`已删除 ${row.name} 的分析 session`)
+  } catch (err) {
+    ElMessage.error(`删除 session 失败: ${err.message || err}`)
   }
 }
 
@@ -1111,6 +1158,10 @@ function statusKind(code) {
   })
 }
 
+function canDeleteSession(code) {
+  return canDeleteAnalysisSession(statusKind(code))
+}
+
 function hasTodayReport(code) {
   const report = todayReportMap[code]
   return Boolean(report?.report_file_path && report?.html_status === 'ready')
@@ -1519,6 +1570,14 @@ function resetStockPageState() {
 }
 .icon-btn-warning:hover:not(:disabled) {
   background: var(--accent-orange);
+  color: #fff;
+}
+.icon-btn-session {
+  background: #fdf2f2;
+  color: var(--color-down);
+}
+.icon-btn-session:hover:not(:disabled) {
+  background: var(--color-down);
   color: #fff;
 }
 .icon-btn-remove {
