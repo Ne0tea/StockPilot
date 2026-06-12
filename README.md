@@ -188,7 +188,7 @@ This flow streams intermediate status, tool-permission prompts, assistant output
 
 ### Specialist Agent Analysis
 
-Specialist analysis is intended for currently held positions and uses the agent runtime in `backend/core/agent_runtime.py`.
+On the Stocks page, the "strategy specialist analysis" button shown for held positions (`frontend/src/views/Stocks.vue`) opens the Agent analysis dialog. This flow is integrated from the `daily_stock_analysis` project (`https://github.com/ZhuLinsen/daily_stock_analysis`) and uses the project's analysis-strategy Skill definitions together with the Agent runtime code under `backend/core/src/agent/`.
 
 It depends on these saved settings:
 
