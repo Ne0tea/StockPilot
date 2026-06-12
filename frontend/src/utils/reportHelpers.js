@@ -8,6 +8,66 @@ export function getTodayDateString(timeZone = 'Asia/Shanghai', now = new Date())
   return formatter.format(now)
 }
 
+function parseDateOnly(value) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) {
+    return null
+  }
+
+  const [, year, month, day] = match
+  return Date.UTC(Number(year), Number(month) - 1, Number(day))
+}
+
+export function getReportFreshness(reportDate, today) {
+  const reportTime = parseDateOnly(reportDate)
+  const todayTime = parseDateOnly(today)
+
+  if (reportTime === null || todayTime === null) {
+    return {
+      key: 'unknown',
+      label: '无报告',
+      title: '暂无日报',
+    }
+  }
+
+  const dayDiff = Math.floor((todayTime - reportTime) / 86400000)
+  const baseTitle = `报告日期：${reportDate}`
+
+  if (dayDiff <= 0) {
+    return {
+      key: 'today',
+      label: '今日',
+      title: baseTitle,
+    }
+  }
+
+  if (dayDiff === 1) {
+    return {
+      key: 'yesterday',
+      label: '昨日',
+      title: baseTitle,
+    }
+  }
+
+  if (dayDiff === 2) {
+    return {
+      key: 'before-yesterday',
+      label: '前日',
+      title: baseTitle,
+    }
+  }
+
+  return {
+    key: 'stale',
+    label: '>3天',
+    title: `${baseTitle}，建议重新生成日报`,
+  }
+}
+
 export function resolveTodayHtmlReport(reports, today) {
   if (!Array.isArray(reports) || !today) {
     return null

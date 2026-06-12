@@ -18,6 +18,140 @@ class ReportSummary:
     current_price: Optional[float] = None
 
 _NUM = r"[¥￥]?\s*(\d+(?:\.\d+)?)"
+_RECOMMENDATION_LEVELS = (
+    "强烈推荐",
+    "推荐买入",
+    "观望等待",
+    "谨慎操作",
+    "建议回避",
+)
+
+
+def _recommendation_token_pattern(token: str) -> str:
+    """Allow optional whitespace/markdown markers between recommendation chars."""
+    return r"\s*".join(re.escape(ch) for ch in token)
+
+
+def _build_recommendation_capture_group() -> str:
+    return "(" + "|".join(_recommendation_token_pattern(token) for token in _RECOMMENDATION_LEVELS) + ")"
+
+
+_RECOMMENDATION_CAPTURE = _build_recommendation_capture_group()
+
+
+def _normalize_recommendation_label(text: str) -> str:
+    collapsed = re.sub(r"\s+", "", text or "")
+    for token in _RECOMMENDATION_LEVELS:
+        if collapsed == token:
+            return token
+    return ""
+
+
+def _map_recommendation_from_score(score_total: float) -> str:
+    if score_total >= 8:
+        return "强烈推荐"
+    if score_total >= 6:
+        return "推荐买入"
+    if score_total >= 4:
+        return "观望等待"
+    if score_total >= 2:
+        return "谨慎操作"
+    if score_total > 0 or score_total == 0:
+        return "建议回避"
+    return ""
+
+
+def _extract_recommendation(content: str, score_total: float) -> str:
+    explicit_label_patterns = [
+        r"(?:投资建议|当前结论|综合评级|评级结论|投资结论|当前评级)\s*[：:]\s*\*{0,2}\s*" + _RECOMMENDATION_CAPTURE,
+        r"(?:投资建议|当前结论|综合评级|评级结论|投资结论|当前评级)[^\n]{0,24}?" + _RECOMMENDATION_CAPTURE,
+    ]
+    for pattern in explicit_label_patterns:
+        match = re.search(pattern, content)
+        if match:
+            recommendation = _normalize_recommendation_label(match.group(1))
+            if recommendation:
+                return recommendation
+
+    current_marker_patterns = [
+        r"[✅☑✔]\s*\*{0,2}[^\n|]{0,24}?[—\-:：]\s*\*{0,2}" + _RECOMMENDATION_CAPTURE,
+        r"[✅☑✔][^\n]*?" + _RECOMMENDATION_CAPTURE,
+    ]
+    for pattern in current_marker_patterns:
+        match = re.search(pattern, content)
+        if match:
+            recommendation = _normalize_recommendation_label(match.group(1))
+            if recommendation:
+                return recommendation
+
+    table_field_patterns = [
+        r"\|\s*\*{0,2}(?:投资建议|当前结论|综合评级|评级结论|投资结论|当前评级)\*{0,2}\s*\|\s*\*{0,2}" + _RECOMMENDATION_CAPTURE + r"\*{0,2}\s*\|",
+    ]
+    for pattern in table_field_patterns:
+        match = re.search(pattern, content)
+        if match:
+            recommendation = _normalize_recommendation_label(match.group(1))
+            if recommendation:
+                return recommendation
+
+    if content:
+        for line in content.splitlines():
+            if not line.strip():
+                continue
+            recommendation = _normalize_recommendation_label(line)
+            if recommendation:
+                return recommendation
+
+    return _map_recommendation_from_score(score_total)
+
+
+def _clean_reason_text(text: str) -> str:
+    text = re.sub(r"\n+", " ", text or "")
+    text = re.sub(r"\*+", "", text)
+    return text.strip()[:200]
+
+
+def _extract_reason(content: str) -> str:
+    explicit_reason_patterns = [
+        (
+            r"(?:投资建议|投资结论)\s*[：:].*?\n+\s*(.+?)(?=\n###|\n##|\n---|\Z)",
+            1,
+        ),
+        (
+            r"(?:投资建议|投资结论)\s*\n+[*\s]*\n+(.+?)(?=\n###|\n##|\n---|\Z)",
+            1,
+        ),
+        (
+            r"\*{0,2}\s*当前结论\s*[：:]\s*[^。\n]+[。\n]?\s*\*{0,2}\s*\n+\s*(.+?)(?=\n###|\n##|\n---|\Z)",
+            1,
+        ),
+        (
+            r"综合判断\s*\n+\*{0,2}当前结论\s*[：:][^\n]*\*{0,2}\s*\n+(.+?)(?=\n###|\n##|\n---|\Z)",
+            1,
+        ),
+        (
+            r"综合投资建议.*?\n+###\s*[^\n]*\n+\s*(.+?)(?=\n\s*\| 价位类型 |\n###|\n##|\n---|\Z)",
+            1,
+        ),
+    ]
+    for pattern, group_index in explicit_reason_patterns:
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            text = _clean_reason_text(match.group(group_index))
+            if len(text) > 10:
+                return text
+
+    recommendation_line_patterns = [
+        r"\*{0,2}(?:强烈推荐|推荐买入|观望等待|谨慎操作|建议回避)\*{0,2}\s*\n+(.+?)(?:\n\s*\n|\n###|\n---|\Z)",
+    ]
+    for pattern in recommendation_line_patterns:
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            text = _clean_reason_text(match.group(1))
+            if len(text) > 10:
+                return text
+
+    return ""
 
 
 def _extract_price(content: str, labels: tuple) -> Optional[float]:
@@ -88,6 +222,7 @@ def parse_report_markdown(content: str) -> ReportSummary:
     def _score_from_table_row(label: str):
         pattern = (
             r"\|\s*\*{0,2}"
+            + r"(?:[\U0001F300-\U0001FAFF]\s*)?"
             + re.escape(label)
             + r"\*{0,2}\s*\|[^\n]*?\*{0,2}\s*([\d.]+)\s*\*{0,2}\s*/\s*10"
         )
@@ -153,12 +288,7 @@ def parse_report_markdown(content: str) -> ReportSummary:
             summary.score_technical * 0.10, 1)
 
     # ── Recommendation level ─────────────────────────────────────────
-    # Matches bold text like "**推荐买入**" or plain "推荐买入"
-    rec_match = re.search(
-        r"\*{0,2}(强烈推荐|推荐买入|观望等待|谨慎操作|建议回避)\*{0,2}", content
-    )
-    if rec_match:
-        summary.recommendation = rec_match.group(1)
+    summary.recommendation = _extract_recommendation(content, summary.score_total)
 
     # ── Action suggestion ────────────────────────────────────────────
     action_patterns = [
@@ -181,65 +311,7 @@ def parse_report_markdown(content: str) -> ReportSummary:
         summary.action = recommendation_to_action.get(summary.recommendation, summary.action)
 
     # ── Investment conclusion / reason ───────────────────────────────
-    # The template format is:
-    #   ### 🎯 投资结论
-    #   **{投资建议等级}**
-    #
-    #   {投资结论详细说明}
-    #
-    #   ### 💡 操作建议
-    #
-    # We capture everything between the recommendation line and the next section.
-    # Terminator: "---", "### ", or 2+ blank lines (whitespace-only lines included)
-    reason_patterns = [
-        # Pattern 1: After "投资结论" section, capture text until next heading/separator
-        r"投资结论\s*\n+[*\s]*\n+(.+?)(?:\n\s*\n|\n\s*\n\s*\n|\n###|\n---|\Z)",
-        # Pattern 2: More flexible — after the bold recommendation line
-        r"\*{0,2}(?:强烈推荐|推荐买入|观望等待|谨慎操作|建议回避)\*{0,2}\s*\n+(.+?)(?:\n\s*\n|\n###|\n---|\Z)",
-        # Pattern 3: Very loose — "投资结论" block up to "操作建议" or next heading
-        r"投资结论.*?\n+(.+?)(?=###\s*[💡⚡]|###\s*操作|###\s*风险|\n---|\Z)",
-    ]
-    for pat in reason_patterns:
-        reason_match = re.search(pat, content, re.DOTALL)
-        if reason_match:
-            text = reason_match.group(1).strip()
-            # Clean up: remove markdown formatting, trailing whitespace
-            text = re.sub(r'\n+', ' ', text)
-            text = re.sub(r'\*+', '', text)
-            text = text.strip()[:200]
-            if len(text) > 10:  # Only accept if meaningful content
-                summary.reason = text
-                break
-
-    if not summary.reason:
-        current_reason_patterns = [
-            r"当前结论\s*[：:]\s*([^。\n]+[。\n]?)\s*\n+\s*(.+?)(?=\n###|\n##|\n---|\Z)",
-            r"综合判断\s*\n+\*{0,2}当前结论\s*[：:][^\n]*\*{0,2}\s*\n+(.+?)(?=\n###|\n##|\n---|\Z)",
-        ]
-        for pat in current_reason_patterns:
-            reason_match = re.search(pat, content, re.DOTALL)
-            if reason_match:
-                text = " ".join(group.strip() for group in reason_match.groups() if group and group.strip())
-                text = re.sub(r"\n+", " ", text)
-                text = re.sub(r"\*+", "", text)
-                text = text.strip()[:200]
-                if len(text) > 10:
-                    summary.reason = text
-                    break
-
-    if not summary.reason:
-        suggestion_reason_match = re.search(
-            r"综合投资建议\s*\n+\s*###\s*[^\n]*\n+\s*(.+?)(?=\n\s*\| 价位类型 |\n###|\n##|\n---|\Z)",
-            content,
-            re.DOTALL,
-        )
-        if suggestion_reason_match:
-            text = suggestion_reason_match.group(1).strip()
-            text = re.sub(r"\n+", " ", text)
-            text = re.sub(r"\*+", "", text)
-            text = text.strip()[:200]
-            if len(text) > 10:
-                summary.reason = text
+    summary.reason = _extract_reason(content)
 
     # ── Price targets ────────────────────────────────────────────────
     # Reports use heterogeneous formats: colon style, markdown tables,
@@ -267,9 +339,11 @@ def parse_report_markdown(content: str) -> ReportSummary:
             "第一目标位",
             "短期目标位",
             "保守目标价",
+            "合理目标区间",
             "短期目标",
             "目标价位",
             "目标价",
+            "目标价1",
             "目标位",
         ),
     )
@@ -292,10 +366,17 @@ def parse_report_markdown(content: str) -> ReportSummary:
     #   "| 当前价 | 96.55 | — |"
     # Look for "当前股价" first (header-row style), then "当前价" (compact table).
     current_patterns = [
+        r"\|\s*(?:[\U0001F300-\U0001FAFF]\s*)?\*{0,2}(?:当前股价|当前价格|今日价格|当前价|当前场内价格)\*{0,2}\s*\|\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
         r"当前股价\s*\|\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
-        r"当前价\s*\|\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
+        r"当前价格\s*\|\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
+        r"今日价格\s*\|\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
         r"当前股价\s*[：:]\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
+        r"当前价格\s*[：:]\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
+        r"今日价格\s*[：:]\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
+        r"当前价\s*\|\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
         r"当前价\s*[：:]\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
+        r"当前场内价格\s*\|\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
+        r"当前场内价格\s*[：:]\s*\*{0,2}\s*[¥￥]?\s*([\d.]+)",
     ]
     for pattern in current_patterns:
         current_match = re.search(pattern, content)

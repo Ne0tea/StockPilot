@@ -49,6 +49,7 @@ def rescan_reports(db: Session, code: Optional[str] = None, reports_root: Option
     query.delete(synchronize_session=False)
 
     for record in parsed_records:
+        html_report_path = _resolve_html_report_path_from_record(record, reports_root_path)
         db.add(
             StockReport(
                 stock_code=record["stock_code"],
@@ -65,7 +66,7 @@ def rescan_reports(db: Session, code: Optional[str] = None, reports_root: Option
                 stop_loss_price=record["stop_loss_price"],
                 entry_price=record["entry_price"],
                 current_price=record["current_price"],
-                report_file_path="",
+                report_file_path=html_report_path,
             )
         )
 
@@ -180,6 +181,29 @@ def _parse_markdown_report(path: Path, stock_names: dict[str, str]) -> dict:
         "entry_price": summary.entry_price,
         "current_price": summary.current_price,
     }
+
+
+def _resolve_html_report_path_from_record(record: dict, reports_root: Path) -> str:
+    stock_code = record.get("stock_code")
+    report_date = record.get("date")
+    if not stock_code or not report_date:
+        return ""
+
+    candidate = reports_root / stock_code / f"{report_date.isoformat()}.html"
+    if candidate.exists():
+        return f"reports/{stock_code}/{candidate.name}"
+
+    nested_candidate = reports_root / "reports" / stock_code / f"{report_date.isoformat()}.html"
+    if nested_candidate.exists():
+        canonical_candidate = reports_root / stock_code / f"{report_date.isoformat()}.html"
+        canonical_candidate.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            nested_candidate.replace(canonical_candidate)
+        except OSError:
+            return f"reports/{stock_code}/{nested_candidate.name}"
+        return f"reports/{stock_code}/{canonical_candidate.name}"
+
+    return ""
 
 
 def _match_markdown_report_filename(filename: str):

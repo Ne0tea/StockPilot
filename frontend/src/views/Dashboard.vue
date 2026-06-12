@@ -6,10 +6,21 @@
 
     <div class="dashboard-grid">
       <SectionCard title="自选股" :badge="`共 ${dashboard.watchlist_signals?.length || 0} 只`" dot-color="var(--accent-orange)">
-        <el-table :data="dashboard.watchlist_signals" :header-cell-style="tableHeaderStyle">
-          <el-table-column prop="name" label="股票" min-width="100">
+        <el-table
+          :data="dashboard.watchlist_signals"
+          :header-cell-style="tableHeaderStyle"
+          :row-class-name="reportRowClassName"
+        >
+          <el-table-column prop="name" label="股票" width="150">
             <template #default="{row}">
-              <span class="stock-name">{{ row.name }}</span>
+              <span class="stock-report-cell">
+                <span class="stock-name" :title="row.name">{{ row.name }}</span>
+                <span
+                  class="report-freshness-tag"
+                  :class="`report-freshness-${reportFreshness(row).key}`"
+                  :title="reportFreshness(row).title"
+                >{{ reportFreshness(row).label }}</span>
+              </span>
             </template>
           </el-table-column>
           <el-table-column prop="score_total" label="评分" min-width="90">
@@ -62,10 +73,21 @@
       </SectionCard>
 
       <SectionCard title="持仓股" :badge="`共 ${dashboard.holding_recommendations?.length || 0} 只`" dot-color="var(--primary)">
-        <el-table :data="dashboard.holding_recommendations" :header-cell-style="tableHeaderStyle">
-          <el-table-column prop="name" label="股票" min-width="100">
+        <el-table
+          :data="dashboard.holding_recommendations"
+          :header-cell-style="tableHeaderStyle"
+          :row-class-name="reportRowClassName"
+        >
+          <el-table-column prop="name" label="股票" width="150">
             <template #default="{row}">
-              <span class="stock-name">{{ row.name }}</span>
+              <span class="stock-report-cell">
+                <span class="stock-name" :title="row.name">{{ row.name }}</span>
+                <span
+                  class="report-freshness-tag"
+                  :class="`report-freshness-${reportFreshness(row).key}`"
+                  :title="reportFreshness(row).title"
+                >{{ reportFreshness(row).label }}</span>
+              </span>
             </template>
           </el-table-column>
           <el-table-column prop="score_total" label="评分" min-width="90">
@@ -101,6 +123,11 @@
                 :disabled="!canOpenTodayReport(row)"
                 @click="openReport(row)"
               >{{ row.action || '—' }}</button>
+            </template>
+          </el-table-column>
+          <el-table-column prop="price" label="今日价格" min-width="180">
+            <template #default="{row}">
+              <ReportPriceCell :row="row" @analyze="goAnalyze(row.code)" />
             </template>
           </el-table-column>
           <el-table-column prop="cost_price" label="成本价" min-width="100">
@@ -141,7 +168,7 @@ import SectionCard from '../components/SectionCard.vue'
 import CostPieChart from '../components/CostPieChart.vue'
 import ProfitChart from '../components/ProfitChart.vue'
 import ReportPriceCell from '../components/ReportPriceCell.vue'
-import { buildReportUrl, formatCompactScore, getTodayDateString } from '../utils/reportHelpers'
+import { buildReportUrl, formatCompactScore, getReportFreshness, getTodayDateString } from '../utils/reportHelpers'
 
 const router = useRouter()
 
@@ -194,6 +221,14 @@ function canOpenTodayReport(row) {
   )
 }
 
+function reportFreshness(row) {
+  return getReportFreshness(row?.date, todayDate)
+}
+
+function reportRowClassName({ row }) {
+  return `report-row-${reportFreshness(row).key}`
+}
+
 function openReport(row) {
   if (!canOpenTodayReport(row)) return
   const reportUrl = buildReportUrl(row.report_file_path)
@@ -238,9 +273,53 @@ function recTagClass(rec) {
 }
 
 /* ── Table Cell Styles ── */
+.stock-report-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
 .stock-name {
+  display: inline-block;
+  max-width: 5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
   color: var(--text-primary);
+  vertical-align: middle;
+}
+.report-freshness-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 38px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.report-freshness-today {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.report-freshness-yesterday {
+  background: var(--accent-blue-light);
+  color: var(--accent-blue);
+}
+.report-freshness-before-yesterday {
+  background: var(--accent-orange-light);
+  color: var(--accent-orange);
+}
+.report-freshness-stale,
+.report-freshness-unknown {
+  background: #F1F3F5;
+  color: #7A7F87;
 }
 .score-badge {
   display: inline-block;
@@ -322,6 +401,15 @@ function recTagClass(rec) {
 .date-text {
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+:deep(.report-row-before-yesterday td.el-table__cell) {
+  background: #FFFDF8;
+}
+
+:deep(.report-row-stale td.el-table__cell),
+:deep(.report-row-unknown td.el-table__cell) {
+  background: #FAFAFA;
 }
 
 @media (max-width: 1100px) {

@@ -24,7 +24,7 @@
           <el-table-column label="持仓成本" width="120">
             <template #default="{row}"><span class="price-neutral">¥{{ formatMoney(row.holding_cost) }}</span></template>
           </el-table-column>
-          <el-table-column label="报告价格" min-width="180">
+          <el-table-column label="今日价格" min-width="180">
             <template #default="{row}">
               <ReportPriceCell :row="row" @analyze="goAnalyze(row.stock_code)" />
             </template>
@@ -56,7 +56,7 @@
               <span :class="profitClass(row.realized_profit)">¥{{ formatMoney(row.realized_profit) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="报告价格" min-width="180">
+          <el-table-column label="今日价格" min-width="180">
             <template #default="{row}">
               <ReportPriceCell :row="row" @analyze="goAnalyze(row.stock_code)" />
             </template>

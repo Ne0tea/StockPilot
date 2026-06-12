@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   buildBulkAnalyzeConfirmationText,
+  getReportFreshness,
   buildTodayHtmlReportPreviewUrl,
   formatCompactScore,
   getBulkAnalyzableStocks,
@@ -82,4 +83,44 @@ test('formats compact score values for dashboard columns', () => {
   assert.equal(formatCompactScore(6.5), '6.5')
   assert.equal(formatCompactScore('7.0'), '7')
   assert.equal(formatCompactScore(null), '—')
+})
+
+test('classifies daily report freshness by report date', () => {
+  assert.deepEqual(getReportFreshness('2026-06-12', '2026-06-12'), {
+    key: 'today',
+    label: '今日',
+    title: '报告日期：2026-06-12',
+  })
+
+  assert.deepEqual(getReportFreshness('2026-06-11', '2026-06-12'), {
+    key: 'yesterday',
+    label: '昨日',
+    title: '报告日期：2026-06-11',
+  })
+
+  assert.deepEqual(getReportFreshness('2026-06-10', '2026-06-12'), {
+    key: 'before-yesterday',
+    label: '前日',
+    title: '报告日期：2026-06-10',
+  })
+
+  assert.deepEqual(getReportFreshness('2026-06-09', '2026-06-12'), {
+    key: 'stale',
+    label: '>3天',
+    title: '报告日期：2026-06-09，建议重新生成日报',
+  })
+})
+
+test('treats invalid or missing report dates as unknown freshness', () => {
+  assert.deepEqual(getReportFreshness('', '2026-06-12'), {
+    key: 'unknown',
+    label: '无报告',
+    title: '暂无日报',
+  })
+
+  assert.deepEqual(getReportFreshness('not-a-date', '2026-06-12'), {
+    key: 'unknown',
+    label: '无报告',
+    title: '暂无日报',
+  })
 })

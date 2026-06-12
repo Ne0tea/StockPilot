@@ -117,6 +117,21 @@ test('returns null when there is no today record', () => {
   assert.equal(resolveTodayReportRecord([], '2026-06-04'), null)
 })
 
+test('prefers an html-ready today record over a markdown-only today record', () => {
+  const record = resolveTodayReportRecord(
+    [
+      { date: '2026-06-04', markdown_file_path: 'reports/002594_xxx_分析报告_20260604.md' },
+      { date: '2026-06-04', report_file_path: 'reports/002594/2026-06-04.html', html_status: 'ready' },
+    ],
+    '2026-06-04',
+  )
+  assert.deepEqual(record, {
+    date: '2026-06-04',
+    report_file_path: 'reports/002594/2026-06-04.html',
+    html_status: 'ready',
+  })
+})
+
 test('detects when cached today date no longer matches Shanghai today', () => {
   const now = new Date('2026-06-05T00:10:00+08:00')
   assert.equal(hasShanghaiDayChanged('2026-06-04', now), true)
