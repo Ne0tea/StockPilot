@@ -46,7 +46,7 @@
             <span class="stock-name">{{ row.stock_name }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="date" label="日期" width="120">
+        <el-table-column prop="date" label="数据日期" width="120">
           <template #default="{row}">
             <span class="date-text">{{ row.date }}</span>
           </template>

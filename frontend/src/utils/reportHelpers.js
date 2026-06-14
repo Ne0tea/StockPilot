@@ -35,12 +35,12 @@ export function getReportFreshness(reportDate, today) {
   }
 
   const dayDiff = Math.floor((todayTime - reportTime) / 86400000)
-  const baseTitle = `报告日期：${reportDate}`
+  const baseTitle = `数据日期：${reportDate}；基准数据日期：${today}`
 
   if (dayDiff <= 0) {
     return {
       key: 'today',
-      label: '今日',
+      label: '最新',
       title: baseTitle,
     }
   }
@@ -48,7 +48,7 @@ export function getReportFreshness(reportDate, today) {
   if (dayDiff === 1) {
     return {
       key: 'yesterday',
-      label: '昨日',
+      label: '早1天',
       title: baseTitle,
     }
   }
@@ -56,16 +56,21 @@ export function getReportFreshness(reportDate, today) {
   if (dayDiff === 2) {
     return {
       key: 'before-yesterday',
-      label: '前日',
+      label: '早2天',
       title: baseTitle,
     }
   }
 
   return {
     key: 'stale',
-    label: '>3天',
+    label: '>2天',
     title: `${baseTitle}，建议重新生成日报`,
   }
+}
+
+export function resolveDashboardReportReferenceDate(source, fallbackToday = '') {
+  const candidate = source?.report_reference_date
+  return parseDateOnly(candidate) === null ? fallbackToday : candidate
 }
 
 export function resolveTodayHtmlReport(reports, today) {

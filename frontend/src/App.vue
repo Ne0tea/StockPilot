@@ -49,7 +49,15 @@
             <div class="record-panel">
               <div class="record-panel-header">
                 <span class="record-title">推送通知</span>
-                <span class="record-count">{{ notifications.length }}</span>
+                <div class="record-panel-actions">
+                  <span class="record-count">{{ notifications.length }}</span>
+                  <button
+                    v-if="notifications.length"
+                    type="button"
+                    class="record-clear-btn"
+                    @click="clearCurrentNotifications"
+                  >清除</button>
+                </div>
               </div>
               <button
                 v-for="item in notifications"
@@ -69,7 +77,7 @@
                 <span class="record-text">{{ item._label }}</span>
                 <span v-if="item.error_message" class="record-error">{{ item.error_message }}</span>
               </button>
-              <div v-if="!notifications.length" class="record-empty">暂无推送记录</div>
+              <div v-if="!notifications.length" class="record-empty">{{ NOTIFICATION_EMPTY_TEXT }}</div>
             </div>
           </el-popover>
         </div>
@@ -87,6 +95,12 @@
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { getDeliveryRecords, getNotifications } from './api'
+import {
+  buildNotificationItems,
+  clearNotificationSources,
+  hasNotificationFailures,
+  NOTIFICATION_EMPTY_TEXT,
+} from './utils/notificationPanelState'
 import {
   Odometer,
   TrendCharts,
@@ -111,45 +125,12 @@ const navItems = [
   { path: '/settings', label: '设置', icon: Setting },
 ]
 
-const FAILED_STATUSES = new Set(['failed', 'test_failed'])
+const notifications = computed(() => buildNotificationItems({
+  deliveryRecords: deliveryRecords.value,
+  notificationLogs: notificationLogs.value,
+}))
 
-const notifications = computed(() => {
-  const items = []
-
-  // delivery records (email sent by scheduler)
-  for (const r of deliveryRecords.value) {
-    items.push({
-      _key: `dr-${r.id}`,
-      _date: r.report_date || r.delivery_date || '',
-      _label: r.holding_names?.join('、') || r.subject || '每日报告',
-      _failed: r.status === 'failed',
-      _delivery: r,
-      channel: 'email',
-      error_message: '',
-    })
-  }
-
-  // notification logs (test sends + failures from notify.py)
-  for (const n of notificationLogs.value) {
-    // skip successful non-test sends already covered by delivery records
-    if (!n.is_test && !FAILED_STATUSES.has(n.status)) continue
-    items.push({
-      _key: `nl-${n.id}`,
-      _date: n.created_at ? n.created_at.slice(0, 16).replace('T', ' ') : '',
-      _label: n.is_test ? `[测试] ${n.subject || ''}` : (n.subject || '推送失败'),
-      _failed: FAILED_STATUSES.has(n.status),
-      _delivery: null,
-      channel: n.channel,
-      error_message: n.error_message || '',
-    })
-  }
-
-  // sort newest first
-  items.sort((a, b) => (b._date > a._date ? 1 : -1))
-  return items.slice(0, 40)
-})
-
-const hasFailures = computed(() => notifications.value.some((n) => n._failed))
+const hasFailures = computed(() => hasNotificationFailures(notifications.value))
 
 onMounted(loadAll)
 
@@ -163,6 +144,15 @@ function openDeliveryRecord(item) {
   const r = item._delivery
   if (!r) return
   router.push({ path: '/reports', query: { start: r.report_date, end: r.report_date } })
+}
+
+function clearCurrentNotifications() {
+  const cleared = clearNotificationSources({
+    deliveryRecords: deliveryRecords.value,
+    notificationLogs: notificationLogs.value,
+  })
+  deliveryRecords.value = cleared.deliveryRecords
+  notificationLogs.value = cleared.notificationLogs
 }
 </script>
 
@@ -381,6 +371,29 @@ function openDeliveryRecord(item) {
 .record-count {
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.record-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.record-clear-btn {
+  border: 1px solid var(--border-light);
+  background: var(--bg-white);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+.record-clear-btn:hover {
+  background: var(--bg-main);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .record-item {

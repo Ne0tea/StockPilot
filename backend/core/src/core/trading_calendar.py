@@ -100,6 +100,22 @@ class MarketPhaseContext:
         }
 
 
+@dataclass
+class _MarketSessionLookup:
+    market: Optional[str]
+    market_now: datetime
+    fallback_date: date
+    known_market: bool
+    calendar_available: bool
+    is_session: Optional[bool] = None
+    session: Optional[Any] = None
+    session_open: Optional[datetime] = None
+    session_close: Optional[datetime] = None
+    break_start: Optional[datetime] = None
+    break_end: Optional[datetime] = None
+    previous_session_date: Optional[date] = None
+
+
 def get_market_for_stock(code: str) -> Optional[str]:
     """
     Infer market region for a stock code.
@@ -175,6 +191,59 @@ def get_market_now(
     return current_time.astimezone(tz)
 
 
+def _resolve_market_session_lookup(
+    market: Optional[str],
+    current_time: Optional[datetime] = None,
+) -> _MarketSessionLookup:
+    market_now = get_market_now(market, current_time=current_time)
+    fallback_date = market_now.date()
+    known_market = market in MARKET_EXCHANGE and market in MARKET_TIMEZONE
+
+    lookup = _MarketSessionLookup(
+        market=market,
+        market_now=market_now,
+        fallback_date=fallback_date,
+        known_market=known_market,
+        calendar_available=_XCALS_AVAILABLE,
+    )
+    if not known_market or not _XCALS_AVAILABLE:
+        return lookup
+
+    ex = MARKET_EXCHANGE[market]
+    tz_name = MARKET_TIMEZONE[market]
+    cal = xcals.get_calendar(ex)
+    local_date = market_now.date()
+    lookup.is_session = bool(cal.is_session(local_date))
+
+    if not lookup.is_session:
+        lookup.previous_session_date = cal.date_to_session(
+            local_date,
+            direction="previous",
+        ).date()
+        return lookup
+
+    session = cal.date_to_session(local_date, direction="previous")
+    lookup.session = session
+    lookup.session_open = _as_market_datetime(cal.session_open(session), tz_name)
+    lookup.session_close = _as_market_datetime(cal.session_close(session), tz_name)
+    lookup.previous_session_date = cal.previous_session(session).date()
+
+    has_break = True
+    if hasattr(cal, "session_has_break"):
+        has_break = bool(cal.session_has_break(session))
+    if has_break:
+        lookup.break_start = _as_market_datetime(
+            cal.session_break_start(session),
+            tz_name,
+        )
+        lookup.break_end = _as_market_datetime(
+            cal.session_break_end(session),
+            tz_name,
+        )
+
+    return lookup
+
+
 def get_effective_trading_date(
     market: Optional[str], current_time: Optional[datetime] = None
 ) -> date:
@@ -187,40 +256,49 @@ def get_effective_trading_date(
     - Trading day after market close: current trading session
     - Calendar lookup failure: fail-open to market-local natural date
     """
-    market_now = get_market_now(market, current_time=current_time)
-    fallback_date = market_now.date()
-
-    if not _XCALS_AVAILABLE:
-        return fallback_date
-
-    ex = MARKET_EXCHANGE.get(market or "")
-    tz_name = MARKET_TIMEZONE.get(market or "")
-    if not ex or not tz_name:
-        return fallback_date
-
     try:
-        cal = xcals.get_calendar(ex)
-        local_date = market_now.date()
-
-        if not cal.is_session(local_date):
-            return cal.date_to_session(local_date, direction="previous").date()
-
-        session = cal.date_to_session(local_date, direction="previous")
-        session_close = cal.session_close(session)
-        if hasattr(session_close, "tz_convert"):
-            close_local = session_close.tz_convert(tz_name).to_pydatetime()
-        elif session_close.tzinfo is not None:
-            close_local = session_close.astimezone(ZoneInfo(tz_name))
-        else:
-            close_local = session_close.replace(tzinfo=ZoneInfo(tz_name))
-
-        if market_now >= close_local:
-            return session.date()
-
-        return cal.previous_session(session).date()
+        lookup = _resolve_market_session_lookup(market, current_time=current_time)
+        if not lookup.known_market or not lookup.calendar_available:
+            return lookup.fallback_date
+        if lookup.is_session is False:
+            return lookup.previous_session_date or lookup.fallback_date
+        if lookup.session_close is None:
+            return lookup.fallback_date
+        if lookup.market_now >= lookup.session_close:
+            return lookup.fallback_date
+        return lookup.previous_session_date or lookup.fallback_date
     except Exception as e:
         logger.warning("trading_calendar.get_effective_trading_date fail-open: %s", e)
-        return fallback_date
+        return get_market_now(market, current_time=current_time).date()
+
+
+def get_notification_report_date(
+    market: Optional[str],
+    current_time: Optional[datetime] = None,
+) -> date:
+    """
+    Resolve the stock report date for notification delivery.
+
+    Rules:
+    - Non-trading day / holiday: previous trading session
+    - Trading day before market open: previous completed trading session
+    - Trading day from market open onward: current trading session
+    - Calendar lookup failure: fail-open to market-local natural date
+    """
+    try:
+        lookup = _resolve_market_session_lookup(market, current_time=current_time)
+        if not lookup.known_market or not lookup.calendar_available:
+            return lookup.fallback_date
+        if lookup.is_session is False:
+            return lookup.previous_session_date or lookup.fallback_date
+        if lookup.session_open is None:
+            return lookup.fallback_date
+        if lookup.market_now < lookup.session_open:
+            return lookup.previous_session_date or lookup.fallback_date
+        return lookup.fallback_date
+    except Exception as e:
+        logger.warning("trading_calendar.get_notification_report_date fail-open: %s", e)
+        return get_market_now(market, current_time=current_time).date()
 
 
 def _as_market_datetime(value: Any, tz_name: str) -> Optional[datetime]:
@@ -273,56 +351,33 @@ def infer_market_phase(
     ``closing_auction`` uses a small per-market near-close heuristic window and
     does not model full exchange auction microstructure.
     """
-    if market not in MARKET_EXCHANGE or market not in MARKET_TIMEZONE:
-        return MarketPhase.UNKNOWN
-    if not _XCALS_AVAILABLE:
-        return MarketPhase.UNKNOWN
-
-    ex = MARKET_EXCHANGE[market]
-    tz_name = MARKET_TIMEZONE[market]
-    market_now = get_market_now(market, current_time=current_time)
-    local_date = market_now.date()
-
     try:
-        cal = xcals.get_calendar(ex)
-        if not cal.is_session(local_date):
+        lookup = _resolve_market_session_lookup(market, current_time=current_time)
+        if not lookup.known_market or not lookup.calendar_available:
+            return MarketPhase.UNKNOWN
+        if lookup.is_session is False:
             return MarketPhase.NON_TRADING
-
-        session = cal.date_to_session(local_date, direction="previous")
-        session_open = _as_market_datetime(cal.session_open(session), tz_name)
-        session_close = _as_market_datetime(cal.session_close(session), tz_name)
-        if session_open is None or session_close is None:
+        if lookup.session_open is None or lookup.session_close is None:
             return MarketPhase.UNKNOWN
 
-        if market_now < session_open:
+        if lookup.market_now < lookup.session_open:
             return MarketPhase.PREMARKET
-        if market_now >= session_close:
+        if lookup.market_now >= lookup.session_close:
             return MarketPhase.POSTMARKET
 
-        # Calendars without session_has_break may still expose break timestamps.
-        has_break = True
-        if hasattr(cal, "session_has_break"):
-            has_break = bool(cal.session_has_break(session))
-
-        break_start = None
-        break_end = None
-        if has_break:
-            break_start = _as_market_datetime(cal.session_break_start(session), tz_name)
-            break_end = _as_market_datetime(cal.session_break_end(session), tz_name)
-
         window_minutes = _CLOSING_AUCTION_WINDOW_MINUTES.get(market, 0)
-        closing_window_start = session_close - timedelta(minutes=window_minutes)
+        closing_window_start = lookup.session_close - timedelta(minutes=window_minutes)
 
-        if break_start is not None and break_end is not None:
-            if market_now < break_start:
+        if lookup.break_start is not None and lookup.break_end is not None:
+            if lookup.market_now < lookup.break_start:
                 return MarketPhase.INTRADAY
-            if market_now < break_end:
+            if lookup.market_now < lookup.break_end:
                 return MarketPhase.LUNCH_BREAK
-            if market_now < closing_window_start:
+            if lookup.market_now < closing_window_start:
                 return MarketPhase.INTRADAY
             return MarketPhase.CLOSING_AUCTION
 
-        if market_now < closing_window_start:
+        if lookup.market_now < closing_window_start:
             return MarketPhase.INTRADAY
         return MarketPhase.CLOSING_AUCTION
     except Exception as e:

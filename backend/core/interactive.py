@@ -22,6 +22,7 @@ from core.report_renderer import (
     extract_report_markdown,
     move_generated_report_html,
 )
+from core.report_storage import resolve_stock_report_terms
 from core.session_logger import SessionLogWriter
 
 
@@ -138,6 +139,7 @@ class InteractiveSession:
         self.code = code
         self.name = name
         self.auto_respond = auto_respond
+        self.report_time, self.report_date = resolve_stock_report_terms(code)
         self.session_id = f"stock_{code}_{date.today().isoformat()}"
         self.output_buffer = ""
         self.report_markdown = ""
@@ -244,7 +246,7 @@ class InteractiveSession:
             include_partial_messages=True,
         )
 
-        html_target_path = build_report_instruction_target(self.code)
+        html_target_path = build_report_instruction_target(self.code, self.report_date)
         outgoing_message = (
             f"分析股票 {self.name}({self.code})，请生成完整分析报告。\n"
             "\n"
@@ -285,7 +287,7 @@ class InteractiveSession:
                     return
 
                 if next_user_reply is None:
-                    if self._handle_missing_html_after_turn(move_generated_report_html(self.code)):
+                    if self._handle_missing_html_after_turn(move_generated_report_html(self.code, self.report_date)):
                         outgoing_message = self._build_missing_html_retry_message()
                         continue
                     self._put_event({"type": "status", "text": "正在整理最终报告..."})
@@ -314,7 +316,7 @@ class InteractiveSession:
         return response_text
 
     def _build_missing_html_retry_message(self) -> str:
-        html_target_path = build_report_instruction_target(self.code)
+        html_target_path = build_report_instruction_target(self.code, self.report_date)
         return (
             f"你还没有生成 HTML 文件。现在不要重写 Markdown 报告，也不要补充解释。\n"
             f"请只执行 HTML 生成步骤，并将文件写入后端指定的绝对路径 `{html_target_path}`。\n"
@@ -494,11 +496,18 @@ async def save_results(
             mark_analysis_error(session.code, "模型未生成有效报告（疑似工具未启用）")
             return
 
-        final_html_path = html_path or move_generated_report_html(session.code)
+        final_html_path = html_path or move_generated_report_html(session.code, session.report_date)
 
         db = SessionLocal()
         try:
-            report = save_report_summary(db, session.code, content, final_html_path)
+            report = save_report_summary(
+                db,
+                session.code,
+                content,
+                final_html_path,
+                session.report_date,
+                session.report_time,
+            )
         finally:
             db.close()
 

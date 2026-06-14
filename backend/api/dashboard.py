@@ -2,10 +2,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from db.database import get_db
 from db.models import MailDeliveryRecord, NotificationLog, Watchlist, StockReport, Portfolio
+from core.report_storage import resolve_stock_report_date
 
 router = APIRouter(tags=["dashboard"])
 
-def _latest_report_item(code, name, report):
+def _report_reference_date(code):
+    return resolve_stock_report_date(code).isoformat()
+
+
+def _latest_report_item(code, name, report, report_reference_date):
     return {
         "code": code, "name": name,
         "score_total": report.score_total,
@@ -21,6 +26,7 @@ def _latest_report_item(code, name, report):
         "current_price": report.current_price,
         "report_file_path": report.report_file_path or "",
         "date": report.date.isoformat() if report.date else None,
+        "report_reference_date": report_reference_date,
     }
 
 @router.get("/dashboard")
@@ -30,13 +36,14 @@ def get_dashboard(db: Session = Depends(get_db)):
 
     holding_recommendations = []
     for pos in holdings:
+        report_reference_date = _report_reference_date(pos.stock_code)
         report = db.query(StockReport).filter(
             StockReport.stock_code == pos.stock_code
         ).order_by(StockReport.date.desc()).first()
         if report:
             holding_recommendations.append(
                 {
-                    **_latest_report_item(pos.stock_code, pos.stock_name or "", report),
+                    **_latest_report_item(pos.stock_code, pos.stock_name or "", report, report_reference_date),
                     "cost": round((pos.shares or 0) * (pos.cost_price or 0), 2),
                     "cost_price": pos.cost_price,
                     "has_report": True,
@@ -56,6 +63,7 @@ def get_dashboard(db: Session = Depends(get_db)):
                     "entry_price": None, "current_price": None,
                     "report_file_path": "",
                     "date": None,
+                    "report_reference_date": report_reference_date,
                     "cost": round((pos.shares or 0) * (pos.cost_price or 0), 2),
                     "cost_price": pos.cost_price,
                     "has_report": False,
@@ -69,11 +77,12 @@ def get_dashboard(db: Session = Depends(get_db)):
     for stock in watchlist:
         if stock.stock_code in holding_codes:
             continue
+        report_reference_date = _report_reference_date(stock.stock_code)
         report = db.query(StockReport).filter(
             StockReport.stock_code == stock.stock_code
         ).order_by(StockReport.date.desc()).first()
         if report:
-            item = _latest_report_item(stock.stock_code, stock.name, report)
+            item = _latest_report_item(stock.stock_code, stock.name, report, report_reference_date)
             item["has_report"] = True
             item["price"] = report.current_price
             item["price_date"] = report.date.isoformat() if report.date else None
@@ -88,6 +97,7 @@ def get_dashboard(db: Session = Depends(get_db)):
                 "entry_price": None, "current_price": None,
                 "report_file_path": "",
                 "date": None,
+                "report_reference_date": report_reference_date,
                 "has_report": False,
                 "price": None,
                 "price_date": None,

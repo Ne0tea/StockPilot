@@ -168,7 +168,7 @@ import SectionCard from '../components/SectionCard.vue'
 import CostPieChart from '../components/CostPieChart.vue'
 import ProfitChart from '../components/ProfitChart.vue'
 import ReportPriceCell from '../components/ReportPriceCell.vue'
-import { buildReportUrl, formatCompactScore, getReportFreshness, getTodayDateString } from '../utils/reportHelpers'
+import { buildReportUrl, formatCompactScore, getReportFreshness, getTodayDateString, resolveDashboardReportReferenceDate } from '../utils/reportHelpers'
 
 const router = useRouter()
 
@@ -214,15 +214,20 @@ function goAnalyze(stockCode) {
 }
 
 function canOpenTodayReport(row) {
+  const referenceDate = reportReferenceDate(row)
   return Boolean(
     row?.report_file_path
     && row?.date
-    && row.date === todayDate
+    && row.date === referenceDate
   )
 }
 
 function reportFreshness(row) {
-  return getReportFreshness(row?.date, todayDate)
+  return getReportFreshness(row?.date, reportReferenceDate(row))
+}
+
+function reportReferenceDate(row) {
+  return resolveDashboardReportReferenceDate(row, todayDate)
 }
 
 function reportRowClassName({ row }) {

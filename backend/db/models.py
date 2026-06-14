@@ -29,6 +29,7 @@ class StockReport(Base):
     entry_price = Column(Float)
     current_price = Column(Float)
     report_file_path = Column(String)
+    report_time = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
 
 

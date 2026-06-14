@@ -8,6 +8,7 @@ import {
   formatCompactScore,
   getBulkAnalyzableStocks,
   hasReadyTodayHtmlReport,
+  resolveDashboardReportReferenceDate,
 } from './reportHelpers.js'
 
 test('bulk analyzable stocks only skip running analyses and existing today reports', () => {
@@ -88,27 +89,42 @@ test('formats compact score values for dashboard columns', () => {
 test('classifies daily report freshness by report date', () => {
   assert.deepEqual(getReportFreshness('2026-06-12', '2026-06-12'), {
     key: 'today',
-    label: '今日',
-    title: '报告日期：2026-06-12',
+    label: '最新数据',
+    title: '数据日期：2026-06-12；基准数据日期：2026-06-12',
   })
 
   assert.deepEqual(getReportFreshness('2026-06-11', '2026-06-12'), {
     key: 'yesterday',
-    label: '昨日',
-    title: '报告日期：2026-06-11',
+    label: '早1天',
+    title: '数据日期：2026-06-11；基准数据日期：2026-06-12',
   })
 
   assert.deepEqual(getReportFreshness('2026-06-10', '2026-06-12'), {
     key: 'before-yesterday',
-    label: '前日',
-    title: '报告日期：2026-06-10',
+    label: '早2天',
+    title: '数据日期：2026-06-10；基准数据日期：2026-06-12',
   })
 
   assert.deepEqual(getReportFreshness('2026-06-09', '2026-06-12'), {
     key: 'stale',
-    label: '>3天',
-    title: '报告日期：2026-06-09，建议重新生成日报',
+    label: '>2天',
+    title: '数据日期：2026-06-09；基准数据日期：2026-06-12，建议重新生成日报',
   })
+})
+
+test('resolves dashboard report reference date from backend trading-day field', () => {
+  assert.equal(
+    resolveDashboardReportReferenceDate(
+      { report_reference_date: '2026-06-12' },
+      '2026-06-14',
+    ),
+    '2026-06-12',
+  )
+
+  assert.equal(
+    resolveDashboardReportReferenceDate({}, '2026-06-14'),
+    '2026-06-14',
+  )
 })
 
 test('treats invalid or missing report dates as unknown freshness', () => {

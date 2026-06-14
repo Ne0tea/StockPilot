@@ -9,3 +9,4 @@ python-multipart==0.0.9
 requests==2.32.0
 pydantic==2.13.4
 markdown2==2.5.0
+exchange-calendars==4.11.2

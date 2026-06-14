@@ -176,11 +176,11 @@ def migrate_stock_report_current_price(engine):
         return
 
     current_columns = {column["name"] for column in inspector.get_columns(STOCK_REPORT_TABLE)}
-    if "current_price" in current_columns:
-        return
-
     with engine.begin() as conn:
-        conn.execute(text("alter table stock_report add column current_price float"))
+        if "current_price" not in current_columns:
+            conn.execute(text("alter table stock_report add column current_price float"))
+        if "report_time" not in current_columns:
+            conn.execute(text("alter table stock_report add column report_time timestamp"))
 
 
 NOTIFICATION_LOG_TABLE = "notification_log"

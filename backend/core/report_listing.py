@@ -1,14 +1,25 @@
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Optional
+import re
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
 from core.parser import parse_report_markdown
 from core.report_renderer import REPORTS_DIR, move_generated_report_html, relative_report_path
+from core.src.core.trading_calendar import get_market_for_stock, get_notification_report_date
 from db.models import StockReport, Watchlist
 
 MARKDOWN_REPORT_FILENAME_RE = r"(?P<code>\d{6})_(?P<name>.+?)_分析报告_(?P<date>\d{8})\.md"
+MARKDOWN_REPORT_TIME_LABEL_RE = re.compile(
+    r"(?:报告生成时间|生成时间|生成日期|报告日期|分析日期)"
+    r"\s*(?:\*\*)?\s*[：:]\s*"
+    r"(?:\*\*)?\s*"
+    r"(?P<time>\d{4}(?:-\d{1,2}-\d{1,2}|年\d{1,2}月\d{1,2}日)"
+    r"(?:[ T]\d{1,2}:\d{2}|[ T]\d{1,2}时\d{1,2}分))"
+)
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def list_reports(
@@ -67,6 +78,7 @@ def rescan_reports(db: Session, code: Optional[str] = None, reports_root: Option
                 entry_price=record["entry_price"],
                 current_price=record["current_price"],
                 report_file_path=html_report_path,
+                report_time=record["report_time"],
             )
         )
 
@@ -123,6 +135,11 @@ def _serialize_db_report(
     reports_root: Path,
 ) -> dict:
     report_date = report.date.isoformat() if report.date else ""
+    report_time = (
+        report.report_time.isoformat(timespec="minutes")
+        if getattr(report, "report_time", None)
+        else ""
+    )
     created_at = report.created_at.isoformat() if report.created_at else ""
     normalized_path = _resolve_html_report_path(report, reports_root)
     markdown_path = _resolve_markdown_report_path(report, stock_names, reports_root)
@@ -132,6 +149,7 @@ def _serialize_db_report(
         "stock_code": report.stock_code,
         "stock_name": stock_names.get(report.stock_code, ""),
         "date": report_date,
+        "report_time": report_time,
         "score_total": report.score_total,
         "score_fundamental": report.score_fundamental,
         "score_news": report.score_news,
@@ -160,14 +178,16 @@ def _parse_markdown_report(path: Path, stock_names: dict[str, str]) -> dict:
 
     stock_code = match.group("code")
     stock_name = match.group("name")
-    compact_date = match.group("date")
-    report_date = date.fromisoformat(f"{compact_date[:4]}-{compact_date[4:6]}-{compact_date[6:8]}")
-
-    summary = parse_report_markdown(path.read_text(encoding="utf-8"))
+    filename_date = _date_from_compact(match.group("date"))
+    content = path.read_text(encoding="utf-8")
+    report_time = _extract_markdown_report_time(content) or _fallback_report_time_from_filename(filename_date)
+    report_date = _resolve_report_date_from_time(stock_code, report_time)
+    summary = parse_report_markdown(content)
     return {
         "stock_code": stock_code,
         "stock_name": stock_names.get(stock_code) or stock_name,
         "date": report_date,
+        "report_time": report_time,
         "score_total": summary.score_total,
         "score_fundamental": summary.score_fundamental,
         "score_news": summary.score_news,
@@ -189,13 +209,16 @@ def _resolve_html_report_path_from_record(record: dict, reports_root: Path) -> s
     if not stock_code or not report_date:
         return ""
 
-    candidate = reports_root / stock_code / f"{report_date.isoformat()}.html"
-    if candidate.exists():
-        return f"reports/{stock_code}/{candidate.name}"
+    for candidate_date in _report_file_candidate_dates(report_date, record.get("report_time")):
+        candidate = reports_root / stock_code / f"{candidate_date.isoformat()}.html"
+        if candidate.exists():
+            return f"reports/{stock_code}/{candidate.name}"
 
-    nested_candidate = reports_root / "reports" / stock_code / f"{report_date.isoformat()}.html"
-    if nested_candidate.exists():
-        canonical_candidate = reports_root / stock_code / f"{report_date.isoformat()}.html"
+    for candidate_date in _report_file_candidate_dates(report_date, record.get("report_time")):
+        nested_candidate = reports_root / "reports" / stock_code / f"{candidate_date.isoformat()}.html"
+        if not nested_candidate.exists():
+            continue
+        canonical_candidate = reports_root / stock_code / f"{candidate_date.isoformat()}.html"
         canonical_candidate.parent.mkdir(parents=True, exist_ok=True)
         try:
             nested_candidate.replace(canonical_candidate)
@@ -207,9 +230,62 @@ def _resolve_html_report_path_from_record(record: dict, reports_root: Path) -> s
 
 
 def _match_markdown_report_filename(filename: str):
-    import re
-
     return re.fullmatch(MARKDOWN_REPORT_FILENAME_RE, filename)
+
+
+def _date_from_compact(value: str) -> date:
+    return date.fromisoformat(f"{value[:4]}-{value[4:6]}-{value[6:8]}")
+
+
+def _fallback_report_time_from_filename(filename_date: date) -> datetime:
+    return datetime.combine(filename_date, time(18, 0))
+
+
+def _extract_markdown_report_time(content: str) -> Optional[datetime]:
+    if not content:
+        return None
+
+    for match in MARKDOWN_REPORT_TIME_LABEL_RE.finditer(content):
+        parsed = _parse_markdown_time_token(match.group("time"))
+        if parsed:
+            return parsed
+    return None
+
+
+def _parse_markdown_time_token(value: str) -> Optional[datetime]:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    chinese_match = re.fullmatch(
+        r"(\d{4})年(\d{1,2})月(\d{1,2})日[ T]?(\d{1,2})时(\d{1,2})分",
+        text,
+    )
+    if chinese_match:
+        year, month, day, hour, minute = [int(part) for part in chinese_match.groups()]
+        return _safe_datetime(year, month, day, hour, minute)
+
+    iso_match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})", text)
+    if iso_match:
+        year, month, day, hour, minute = [int(part) for part in iso_match.groups()]
+        return _safe_datetime(year, month, day, hour, minute)
+    return None
+
+
+def _safe_datetime(year: int, month: int, day: int, hour: int, minute: int) -> Optional[datetime]:
+    try:
+        return datetime(year, month, day, hour, minute)
+    except ValueError:
+        return None
+
+
+def _resolve_report_date_from_time(stock_code: str, report_time: datetime) -> date:
+    market = get_market_for_stock(stock_code)
+    try:
+        reference_time = report_time.replace(tzinfo=SHANGHAI_TZ)
+        return get_notification_report_date(market, current_time=reference_time)
+    except Exception:
+        return report_time.date()
 
 
 def _resolve_html_report_path(report: StockReport, reports_root: Path) -> str:
@@ -222,9 +298,10 @@ def _resolve_html_report_path(report: StockReport, reports_root: Path) -> str:
     if not report.stock_code or not report.date:
         return ""
 
-    candidate = reports_root / report.stock_code / f"{report.date.isoformat()}.html"
-    if candidate.exists():
-        return f"reports/{report.stock_code}/{candidate.name}"
+    for candidate_date in _report_file_candidate_dates(report.date, getattr(report, "report_time", None)):
+        candidate = reports_root / report.stock_code / f"{candidate_date.isoformat()}.html"
+        if candidate.exists():
+            return f"reports/{report.stock_code}/{candidate.name}"
 
     moved_path = _repair_nested_html_path(report, reports_root)
     if moved_path:
@@ -235,8 +312,15 @@ def _resolve_html_report_path(report: StockReport, reports_root: Path) -> str:
 def _repair_nested_html_path(report: StockReport, reports_root: Path) -> str:
     default_reports_root = Path(REPORTS_DIR).resolve()
     if reports_root.resolve() != default_reports_root:
-        nested_candidate = reports_root / "reports" / report.stock_code / f"{report.date.isoformat()}.html"
-        canonical_candidate = reports_root / report.stock_code / f"{report.date.isoformat()}.html"
+        candidate_dates = _report_file_candidate_dates(report.date, getattr(report, "report_time", None))
+        nested_candidate = reports_root / "reports" / report.stock_code / f"{candidate_dates[0].isoformat()}.html"
+        canonical_candidate = reports_root / report.stock_code / f"{candidate_dates[0].isoformat()}.html"
+        for candidate_date in candidate_dates:
+            candidate = reports_root / "reports" / report.stock_code / f"{candidate_date.isoformat()}.html"
+            if candidate.exists():
+                nested_candidate = candidate
+                canonical_candidate = reports_root / report.stock_code / f"{candidate_date.isoformat()}.html"
+                break
         if not nested_candidate.exists():
             return ""
         canonical_candidate.parent.mkdir(parents=True, exist_ok=True)
@@ -246,7 +330,11 @@ def _repair_nested_html_path(report: StockReport, reports_root: Path) -> str:
             return ""
         return f"reports/{report.stock_code}/{canonical_candidate.name}"
 
-    return move_generated_report_html(report.stock_code, report.date)
+    for candidate_date in _report_file_candidate_dates(report.date, getattr(report, "report_time", None)):
+        moved_path = move_generated_report_html(report.stock_code, candidate_date)
+        if moved_path:
+            return moved_path
+    return ""
 
 
 def _resolve_markdown_report_path(
@@ -257,18 +345,29 @@ def _resolve_markdown_report_path(
     if not report.stock_code or not report.date:
         return ""
 
-    compact_date = report.date.strftime("%Y%m%d")
-    candidates = sorted(reports_root.glob(f"{report.stock_code}_*_分析报告_{compact_date}.md"))
+    candidates = []
+    for candidate_date in _report_file_candidate_dates(report.date, getattr(report, "report_time", None)):
+        compact_date = candidate_date.strftime("%Y%m%d")
+        candidates.extend(sorted(reports_root.glob(f"{report.stock_code}_*_分析报告_{compact_date}.md")))
     if not candidates:
         return ""
 
     preferred_name = (stock_names.get(report.stock_code) or "").strip()
     if preferred_name:
-        preferred = reports_root / f"{report.stock_code}_{preferred_name}_分析报告_{compact_date}.md"
-        if preferred.exists():
-            return f"reports/{preferred.name}"
+        for candidate_date in _report_file_candidate_dates(report.date, getattr(report, "report_time", None)):
+            compact_date = candidate_date.strftime("%Y%m%d")
+            preferred = reports_root / f"{report.stock_code}_{preferred_name}_分析报告_{compact_date}.md"
+            if preferred.exists():
+                return f"reports/{preferred.name}"
 
     return f"reports/{candidates[0].name}"
+
+
+def _report_file_candidate_dates(report_date: date, report_time: Optional[datetime]) -> list[date]:
+    dates = [report_date]
+    if report_time and report_time.date() not in dates:
+        dates.append(report_time.date())
+    return dates
 
 
 def _read_text_if_exists(path: Path) -> str:

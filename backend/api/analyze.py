@@ -18,7 +18,7 @@ from core.interactive import (
     start_session,
 )
 from core.report_listing import list_reports, rescan_reports
-from core.report_storage import save_report_html, save_report_summary
+from core.report_storage import resolve_stock_report_terms, save_report_html, save_report_summary
 from core.stock_reset import acquire_analysis_start_slot, is_reset_in_progress, release_analysis_start_slot
 from db.database import get_db
 from db.models import StockReport, Watchlist
@@ -54,10 +54,11 @@ def submit_report(code: str, body: ReportIn, db: Session = Depends(get_db)):
     try:
         if is_reset_in_progress():
             return {"error": "系统正在初始化，请稍后重试"}
+        report_time, report_date = resolve_stock_report_terms(code)
         html_path = ""
         if body.html:
-            html_path = save_report_html(code, body.html)
-        report = save_report_summary(db, code, body.markdown, html_path)
+            html_path = save_report_html(code, body.html, report_date)
+        report = save_report_summary(db, code, body.markdown, html_path, report_date, report_time)
         if report is None:
             return {"error": "系统正在初始化，请稍后重试"}
         return {"ok": True, "report_id": report.id}

@@ -3,11 +3,20 @@ from db.database import SessionLocal
 from db.models import MailDeliveryRecord, Settings, Watchlist, StockReport, Portfolio
 from core.notify import send_email, send_wechat, build_daily_report_markdown, email_configured, wechat_configured
 from core.report_storage import cleanup_old_reports
+from core.src.core.trading_calendar import (
+    get_market_for_stock,
+    get_notification_report_date,
+)
 from datetime import date
 import logging
 
 logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler()
+
+
+def _resolve_report_date_for_stock(stock_code: str):
+    market = get_market_for_stock(stock_code)
+    return get_notification_report_date(market)
 
 
 def daily_report_job():
@@ -26,9 +35,10 @@ def daily_report_job():
         holding_recs = []
         holding_missing = []
         for pos in holdings:
+            report_date = _resolve_report_date_for_stock(pos.stock_code)
             report = db.query(StockReport).filter(
                 StockReport.stock_code == pos.stock_code,
-                StockReport.date == today,
+                StockReport.date == report_date,
             ).first()
             if not report:
                 holding_missing.append({
@@ -39,11 +49,9 @@ def daily_report_job():
             holding_recs.append({
                 "code": pos.stock_code, "name": pos.stock_name or "",
                 "score_total": report.score_total,
-                "recommendation": report.recommendation,
                 "action": report.action, "reason": report.reason,
                 "target_price": report.target_price,
                 "stop_loss_price": report.stop_loss_price,
-                "entry_price": report.entry_price,
             })
 
         watchlist = db.query(Watchlist).filter(Watchlist.is_active == True).all()
@@ -52,9 +60,10 @@ def daily_report_job():
         for stock in watchlist:
             if stock.stock_code in holding_codes:
                 continue
+            report_date = _resolve_report_date_for_stock(stock.stock_code)
             report = db.query(StockReport).filter(
                 StockReport.stock_code == stock.stock_code,
-                StockReport.date == today,
+                StockReport.date == report_date,
             ).first()
             if not report:
                 watchlist_missing.append({
@@ -66,9 +75,6 @@ def daily_report_job():
                 "code": stock.stock_code, "name": stock.name,
                 "score_total": report.score_total,
                 "recommendation": report.recommendation,
-                "action": report.action, "reason": report.reason,
-                "target_price": report.target_price,
-                "stop_loss_price": report.stop_loss_price,
                 "entry_price": report.entry_price,
             })
 
