@@ -54,6 +54,7 @@ export const testWechat = () => api.post('/settings/test-wechat', null, { timeou
 export const resolveStock = (field, q) =>
   api.get(`/stocks/resolve?field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`)
 export const getNotifications = () => api.get('/dashboard/notifications')
+export const clearNotifications = () => api.post('/dashboard/notifications/clear')
 
 export const startInteractiveAnalysisWithMode = (code, auto_respond = false) =>
   api.post(`/analyze/${code}/interactive`, { auto_respond })

@@ -37,6 +37,7 @@
       <SectionCard title="自选股列表" dot-color="var(--primary)">
         <el-table
           :data="stocksList"
+          :row-style="{ height: 'var(--stocks-row-height)' }"
           :header-cell-style="{ background: '#F8F9FA', color: '#999', fontSize: '12px', fontWeight: '600' }"
         >
           <el-table-column prop="name" label="名称" width="130">
@@ -159,18 +160,13 @@
       <SectionCard title="历史评分趋势" dot-color="var(--accent-orange)">
         <div class="history-list">
           <div v-for="stock in stocksList" :key="stock.stock_code" class="history-row">
-            <div class="history-row-header">
-              <span class="history-stock-name">{{ stock.name }}</span>
-              <span class="history-stock-code">{{ stock.stock_code }}</span>
-            </div>
-            <div class="history-row-body">
-              <ScoreChart
-                v-if="historyMap[stock.stock_code]?.length"
-                :history="historyMap[stock.stock_code]"
-                compact
-              />
-              <div v-else class="history-empty">暂无历史报告</div>
-            </div>
+            <ScoreChart
+              v-if="historyMap[stock.stock_code]?.length"
+              :history="historyMap[stock.stock_code]"
+              compact
+              height="var(--stocks-history-chart-height)"
+            />
+            <div v-else class="history-empty">暂无数据</div>
           </div>
         </div>
       </SectionCard>
@@ -1404,11 +1400,18 @@ function resetStockPageState() {
 
 /* ── Stocks Grid ── */
 .stocks-grid {
+  --stocks-row-height: 56px;
+  --stocks-table-header-height: 44px;
+  --stocks-history-chart-height: calc(var(--stocks-row-height) - 8px);
   display: grid;
   grid-template-columns: 2.5fr 1fr;
   gap: 20px;
   width: 100%;
   margin-bottom: 24px;
+}
+:deep(.el-table__body td.el-table__cell) {
+  height: var(--stocks-row-height);
+  padding: 0;
 }
 
 /* ── Market Tag ── */
@@ -1474,47 +1477,34 @@ function resetStockPageState() {
 
 /* ── History Panel ── */
 .history-list {
-  padding: 12px 16px 16px;
+  padding: 0 16px;
+}
+.history-list::before {
+  content: '';
+  display: block;
+  height: var(--stocks-table-header-height);
+  border-bottom: 1px solid var(--border-light);
+  box-sizing: border-box;
 }
 .history-row {
-  min-height: 128px;
-  padding: 12px 0;
+  height: var(--stocks-row-height);
+  padding: 4px 0;
   border-bottom: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
 }
 .history-row:last-child {
   border-bottom: none;
 }
-.history-row-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-.history-stock-name {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.history-stock-code {
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: var(--bg-main);
-  padding: 3px 8px;
-  border-radius: 999px;
-}
-.history-row-body {
-  min-height: 80px;
-  display: flex;
-  align-items: center;
-}
 .history-empty {
   width: 100%;
-  min-height: 80px;
+  height: var(--stocks-history-chart-height);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-placeholder);
-  font-size: 13px;
+  font-size: 12px;
   background: linear-gradient(180deg, #fafafa 0%, #f6f7f8 100%);
   border-radius: var(--radius-sm);
 }

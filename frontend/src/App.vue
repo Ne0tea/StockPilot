@@ -55,8 +55,9 @@
                     v-if="notifications.length"
                     type="button"
                     class="record-clear-btn"
+                    :disabled="clearingNotifications"
                     @click="clearCurrentNotifications"
-                  >清除</button>
+                  >{{ clearingNotifications ? '清除中' : '清除' }}</button>
                 </div>
               </div>
               <button
@@ -94,7 +95,7 @@
 <script setup>
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { getDeliveryRecords, getNotifications } from './api'
+import { clearNotifications, getDeliveryRecords, getNotifications } from './api'
 import {
   buildNotificationItems,
   clearNotificationSources,
@@ -116,6 +117,7 @@ const router = useRouter()
 const sidebarCollapsed = ref(false)
 const deliveryRecords = ref([])
 const notificationLogs = ref([])
+const clearingNotifications = ref(false)
 
 const navItems = [
   { path: '/', label: '仪表盘', icon: Odometer },
@@ -146,7 +148,15 @@ function openDeliveryRecord(item) {
   router.push({ path: '/reports', query: { start: r.report_date, end: r.report_date } })
 }
 
-function clearCurrentNotifications() {
+async function clearCurrentNotifications() {
+  if (clearingNotifications.value || !notifications.value.length) return
+  clearingNotifications.value = true
+  try {
+    await clearNotifications()
+  } finally {
+    clearingNotifications.value = false
+  }
+
   const cleared = clearNotificationSources({
     deliveryRecords: deliveryRecords.value,
     notificationLogs: notificationLogs.value,
@@ -394,6 +404,10 @@ function clearCurrentNotifications() {
   background: var(--bg-main);
   border-color: var(--primary);
   color: var(--primary);
+}
+.record-clear-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .record-item {

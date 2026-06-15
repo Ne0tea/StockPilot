@@ -10,11 +10,12 @@ import { buildScoreChartOption } from '../utils/scoreChartOptions'
 const props = defineProps({
   history: { type: Array, default: () => [] },
   compact: { type: Boolean, default: false },
+  height: { type: String, default: '' },
 })
 const chartRef = ref(null)
 const chartStyle = computed(() => ({
   width: '100%',
-  height: props.compact ? '80px' : '320px',
+  height: props.height || (props.compact ? '80px' : '320px'),
 }))
 let chart = null
 

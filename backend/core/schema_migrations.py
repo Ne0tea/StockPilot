@@ -146,6 +146,10 @@ MAIL_DELIVERY_TABLE = "mail_delivery_record"
 def migrate_mail_delivery_record_schema(engine):
     inspector = inspect(engine)
     if MAIL_DELIVERY_TABLE in inspector.get_table_names():
+        current_columns = {column["name"] for column in inspector.get_columns(MAIL_DELIVERY_TABLE)}
+        if "is_hidden" not in current_columns:
+            with engine.begin() as conn:
+                conn.execute(text("alter table mail_delivery_record add column is_hidden boolean default 0 not null"))
         return
 
     with engine.begin() as conn:
@@ -158,6 +162,7 @@ def migrate_mail_delivery_record_schema(engine):
                 holding_codes varchar default '',
                 holding_names varchar default '',
                 status varchar default 'sent',
+                is_hidden boolean default 0 not null,
                 created_at timestamp
             )
         """))
@@ -190,6 +195,10 @@ ANALYSIS_TASK_STATE_TABLE = "analysis_task_state"
 def migrate_notification_log_schema(engine):
     inspector = inspect(engine)
     if NOTIFICATION_LOG_TABLE in inspector.get_table_names():
+        current_columns = {column["name"] for column in inspector.get_columns(NOTIFICATION_LOG_TABLE)}
+        if "is_hidden" not in current_columns:
+            with engine.begin() as conn:
+                conn.execute(text("alter table notification_log add column is_hidden boolean default 0 not null"))
         return
 
     with engine.begin() as conn:
@@ -202,6 +211,7 @@ def migrate_notification_log_schema(engine):
                 message_preview varchar default '',
                 error_message varchar default '',
                 is_test boolean default 0,
+                is_hidden boolean default 0 not null,
                 created_at timestamp
             )
         """))

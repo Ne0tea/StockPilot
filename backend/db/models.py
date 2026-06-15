@@ -100,6 +100,7 @@ class MailDeliveryRecord(Base):
     holding_codes = Column(String, default="")
     holding_names = Column(String, default="")
     status = Column(String, default="sent")
+    is_hidden = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
 
 
@@ -112,4 +113,5 @@ class NotificationLog(Base):
     message_preview = Column(String, default="")
     error_message = Column(String, default="")
     is_test = Column(Boolean, default=False)
+    is_hidden = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.now, index=True)

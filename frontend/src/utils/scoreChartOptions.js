@@ -76,13 +76,15 @@ export function buildScoreChartOption(history = [], { compact = false } = {}) {
           textStyle: { color: '#666', fontSize: 12 },
         },
     grid: compact
-      ? { top: 12, left: 8, right: 8, bottom: 12, containLabel: true }
+      ? { top: 6, left: 4, right: 4, bottom: 10, containLabel: true }
       : { top: 20, left: 10, right: 16, bottom: 40, containLabel: true },
     xAxis: {
       type: 'category',
       data: dates,
       axisLine: { lineStyle: { color: '#EBEBEB' } },
-      axisLabel: compact ? { show: false } : { color: '#999', fontSize: 11 },
+      axisLabel: compact
+        ? { show: true, color: '#B0B5BD', fontSize: 9, margin: 2, hideOverlap: true }
+        : { color: '#999', fontSize: 11 },
       axisTick: { show: false },
       boundaryGap: false,
     },
@@ -93,7 +95,9 @@ export function buildScoreChartOption(history = [], { compact = false } = {}) {
       splitLine: { lineStyle: { color: '#F5F5F5', type: 'dashed' } },
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: compact ? { show: false } : { color: '#999', fontSize: 11 },
+      axisLabel: compact
+        ? { show: true, color: '#B0B5BD', fontSize: 9, margin: 2, hideOverlap: true }
+        : { color: '#999', fontSize: 11 },
     },
     series,
   }

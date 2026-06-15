@@ -7,4 +7,5 @@ test('legacy analysis endpoints are no longer exported', () => {
   assert.equal('triggerAnalysis' in api, false)
   assert.equal('triggerAll' in api, false)
   assert.equal(typeof api.startInteractiveAnalysisWithMode, 'function')
+  assert.equal(typeof api.clearNotifications, 'function')
 })

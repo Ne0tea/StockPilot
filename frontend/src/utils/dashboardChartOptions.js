@@ -46,19 +46,6 @@ export function buildProfitChartOption(history = [], { mode = 'amount' } = {}) {
         symbolSize: 7,
         lineStyle: { width: 3, color: '#00A86B' },
         itemStyle: { color: '#00A86B' },
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(0, 168, 107, 0.28)' },
-              { offset: 1, color: 'rgba(0, 168, 107, 0.02)' },
-            ],
-          },
-        },
         data: history.map((item) => item[valueKey]),
       },
     ],

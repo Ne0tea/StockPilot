@@ -115,7 +115,9 @@ def get_dashboard(db: Session = Depends(get_db)):
 
 @router.get("/dashboard/delivery-records")
 def get_delivery_records(db: Session = Depends(get_db)):
-    rows = db.query(MailDeliveryRecord).order_by(
+    rows = db.query(MailDeliveryRecord).filter(
+        MailDeliveryRecord.is_hidden == False
+    ).order_by(
         MailDeliveryRecord.delivery_date.desc(),
         MailDeliveryRecord.id.desc(),
     ).limit(30).all()
@@ -136,7 +138,9 @@ def get_delivery_records(db: Session = Depends(get_db)):
 
 @router.get("/dashboard/notifications")
 def get_notifications(db: Session = Depends(get_db)):
-    rows = db.query(NotificationLog).order_by(
+    rows = db.query(NotificationLog).filter(
+        NotificationLog.is_hidden == False
+    ).order_by(
         NotificationLog.created_at.desc()
     ).limit(50).all()
     return [
@@ -152,3 +156,18 @@ def get_notifications(db: Session = Depends(get_db)):
         }
         for row in rows
     ]
+
+
+@router.post("/dashboard/notifications/clear")
+def clear_notifications(db: Session = Depends(get_db)):
+    hidden_delivery_records = db.query(MailDeliveryRecord).filter(
+        MailDeliveryRecord.is_hidden == False
+    ).update({MailDeliveryRecord.is_hidden: True}, synchronize_session=False)
+    hidden_notification_logs = db.query(NotificationLog).filter(
+        NotificationLog.is_hidden == False
+    ).update({NotificationLog.is_hidden: True}, synchronize_session=False)
+    db.commit()
+    return {
+        "hidden_delivery_records": hidden_delivery_records,
+        "hidden_notification_logs": hidden_notification_logs,
+    }
