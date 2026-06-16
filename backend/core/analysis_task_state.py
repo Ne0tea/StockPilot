@@ -26,8 +26,6 @@ def clear_stale_task_states(db: Session, today: date | None = None) -> int:
 
 def get_task_state_row(db: Session, stock_code: str, analysis_date: date | None = None) -> AnalysisTaskState | None:
     target_day = analysis_date or shanghai_today()
-    if _delete_stale_task_states(db, target_day):
-        db.flush()
     return (
         db.query(AnalysisTaskState)
         .filter(

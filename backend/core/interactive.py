@@ -432,6 +432,7 @@ def start_session(code: str, name: str, auto_respond: bool = False) -> Optional[
     if not acquire_analysis_start_slot():
         return None
 
+    session: Optional[InteractiveSession] = None
     with _sessions_lock:
         try:
             if is_reset_in_progress():
@@ -444,9 +445,15 @@ def start_session(code: str, name: str, auto_respond: bool = False) -> Optional[
         finally:
             release_analysis_start_slot()
 
-    _persist_interactive_status(code, "running", run_mode="interactive")
-    asyncio.create_task(session.start())
-    return session
+    try:
+        _persist_interactive_status(code, "running", run_mode="interactive")
+        asyncio.create_task(session.start())
+        return session
+    except Exception:
+        with _sessions_lock:
+            if _active_sessions.get(code) is session:
+                _active_sessions.pop(code, None)
+        raise
 
 
 def get_session(code: str) -> Optional["InteractiveSession"]:
