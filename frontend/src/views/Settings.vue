@@ -74,6 +74,7 @@
             </label>
             <el-select v-model="settings.wechat_msg_type" style="width:100%">
               <el-option label="Markdown（企业微信内显示格式）" value="markdown" />
+              <el-option label="Markdown_v2（企业微信新格式）" value="markdown_v2" />
               <el-option label="Text（纯文本，微信也可查看）" value="text" />
             </el-select>
           </div>
@@ -246,6 +247,7 @@ import {
 } from '@element-plus/icons-vue'
 import PageHeader from '../components/PageHeader.vue'
 import { getScheduleClockState } from '../utils/scheduleClock'
+import { saveSettingsForm, saveThenRunTest } from '../utils/settingsSaveFlow'
 
 const settings = ref(null)
 const saving = ref(false)
@@ -257,16 +259,12 @@ const wechatTestResult = ref(null)
 onMounted(async () => { settings.value = (await getSettings()).data })
 
 async function save() {
-  const scheduleClock = getScheduleClockState(settings.value?.schedule_time)
-  if (!scheduleClock.isValid) {
-    ElMessage.error('分析时间格式不正确，请输入 24 小时制 HH:MM')
-    return
-  }
-  settings.value.schedule_time = scheduleClock.label
   saving.value = true
   try {
-    await updateSettings(settings.value)
+    settings.value = await saveSettingsForm(settings.value, updateSettings, getScheduleClockState)
     ElMessage.success('保存成功')
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
   } finally {
     saving.value = false
   }
@@ -276,7 +274,14 @@ async function doTestEmail() {
   testingEmail.value = true
   emailTestResult.value = null
   try {
-    const { data } = await testEmail()
+    const { normalizedSettings, testResult } = await saveThenRunTest(
+      settings.value,
+      updateSettings,
+      testEmail,
+      getScheduleClockState,
+    )
+    settings.value = normalizedSettings
+    const { data } = testResult
     emailTestResult.value = data
     if (data.ok) ElMessage.success(data.message)
     else ElMessage.error(data.message)
@@ -292,7 +297,14 @@ async function doTestWechat() {
   testingWechat.value = true
   wechatTestResult.value = null
   try {
-    const { data } = await testWechat()
+    const { normalizedSettings, testResult } = await saveThenRunTest(
+      settings.value,
+      updateSettings,
+      testWechat,
+      getScheduleClockState,
+    )
+    settings.value = normalizedSettings
+    const { data } = testResult
     wechatTestResult.value = data
     if (data.ok) ElMessage.success(data.message)
     else ElMessage.error(data.message)

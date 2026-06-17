@@ -1346,6 +1346,12 @@ class Config:
         # 企微消息类型与最大字节数逻辑
         wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
         wechat_msg_type_lower = wechat_msg_type.lower()
+        if wechat_msg_type_lower not in {'text', 'markdown', 'markdown_v2'}:
+            logger.warning(
+                "WECHAT_MSG_TYPE=%s 不受支持，已回退为 markdown",
+                wechat_msg_type,
+            )
+            wechat_msg_type_lower = 'markdown'
         wechat_max_bytes_env = os.getenv('WECHAT_MAX_BYTES')
         if wechat_max_bytes_env not in (None, ''):
             wechat_max_bytes = parse_env_int(

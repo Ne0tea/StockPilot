@@ -5,7 +5,12 @@
     <SummaryCards :cards="summaryCards" />
 
     <div class="dashboard-grid">
-      <SectionCard title="自选股" :badge="`共 ${dashboard.watchlist_signals?.length || 0} 只`" dot-color="var(--accent-orange)">
+      <SectionCard
+        class="watchlist-card"
+        title="自选股"
+        :badge="`共 ${dashboard.watchlist_signals?.length || 0} 只`"
+        dot-color="var(--accent-orange)"
+      >
         <el-table
           :data="dashboard.watchlist_signals"
           :header-cell-style="tableHeaderStyle"
@@ -66,13 +71,26 @@
         </el-table>
       </SectionCard>
 
-      <SectionCard title="总盈利折线图" dot-color="#00A86B">
-        <div class="chart-wrapper">
-          <ProfitChart :history="profitHistory" />
-        </div>
-      </SectionCard>
+      <div class="chart-stack">
+        <SectionCard title="总盈利折线图" dot-color="#00A86B" class="chart-card">
+          <div class="chart-wrapper chart-wrapper-profit">
+            <ProfitChart :history="profitHistory" />
+          </div>
+        </SectionCard>
 
-      <SectionCard title="持仓股" :badge="`共 ${dashboard.holding_recommendations?.length || 0} 只`" dot-color="var(--primary)">
+        <SectionCard title="持仓成本占比" dot-color="var(--accent-blue)" class="chart-card">
+          <div class="chart-wrapper chart-wrapper-cost">
+            <CostPieChart :items="dashboard.holding_recommendations" />
+          </div>
+        </SectionCard>
+      </div>
+
+      <SectionCard
+        class="holding-card"
+        title="持仓股"
+        :badge="`共 ${dashboard.holding_recommendations?.length || 0} 只`"
+        dot-color="var(--primary)"
+      >
         <el-table
           :data="dashboard.holding_recommendations"
           :header-cell-style="tableHeaderStyle"
@@ -146,12 +164,6 @@
             </template>
           </el-table-column>
         </el-table>
-      </SectionCard>
-
-      <SectionCard title="持仓成本占比" dot-color="var(--accent-blue)">
-        <div class="chart-wrapper">
-          <CostPieChart :items="dashboard.holding_recommendations" />
-        </div>
       </SectionCard>
     </div>
   </div>
@@ -271,10 +283,42 @@ function recTagClass(rec) {
   grid-template-columns: 1.5fr 1fr;
   gap: 20px;
   width: 100%;
+  align-items: start;
+  grid-template-areas:
+    "watchlist charts"
+    "holding charts";
+}
+
+.watchlist-card {
+  grid-area: watchlist;
+}
+
+.holding-card {
+  grid-area: holding;
+}
+
+.chart-stack {
+  grid-area: charts;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  align-self: start;
 }
 
 .chart-wrapper {
   padding: 16px 20px;
+}
+
+.chart-card {
+  width: 100%;
+}
+
+.chart-wrapper-profit {
+  min-height: 320px;
+}
+
+.chart-wrapper-cost {
+  min-height: 340px;
 }
 
 /* ── Table Cell Styles ── */
@@ -420,6 +464,10 @@ function recTagClass(rec) {
 @media (max-width: 1100px) {
   .dashboard-grid {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "watchlist"
+      "charts"
+      "holding";
   }
 }
 </style>

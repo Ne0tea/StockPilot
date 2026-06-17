@@ -42,13 +42,21 @@ class WechatSender:
         推送消息到企业微信机器人
         
         企业微信 Webhook 消息格式：
-        支持 markdown 类型以及 text 类型, markdown 类型在微信中无法展示，可以使用 text 类型,
-        markdown 类型会解析 markdown 格式,text 类型会直接发送纯文本。
+        支持 markdown、markdown_v2 与 text 类型。markdown / markdown_v2
+        会按对应富文本格式发送，text 类型会直接发送纯文本。
 
         markdown 类型示例：
         {
             "msgtype": "markdown",
             "markdown": {
+                "content": "## 标题\n\n内容"
+            }
+        }
+
+        markdown_v2 类型示例：
+        {
+            "msgtype": "markdown_v2",
+            "markdown_v2": {
                 "content": "## 标题\n\n内容"
             }
         }
@@ -61,7 +69,8 @@ class WechatSender:
             }
         }
 
-        注意：企业微信 Markdown 限制 4096 字节（非字符）, Text 类型限制 2048 字节，超长内容会自动分批发送
+        注意：企业微信 Markdown / MarkdownV2 限制 4096 字节（非字符）,
+        Text 类型限制 2048 字节，超长内容会自动分批发送
         可通过环境变量 WECHAT_MAX_BYTES 调整限制值
         
         Args:
@@ -78,7 +87,7 @@ class WechatSender:
         if self._wechat_msg_type == 'text':
             max_bytes = min(self._wechat_max_bytes, 2000)  # 预留一定字节给系统/分页标记
         else:
-            max_bytes = self._wechat_max_bytes  # markdown 默认 4000 字节
+            max_bytes = self._wechat_max_bytes  # markdown / markdown_v2 默认 4000 字节
         
         # 检查字节长度，超长则分批发送
         content_bytes = len(content.encode('utf-8'))
@@ -179,6 +188,13 @@ class WechatSender:
             return {
                 "msgtype": "text",
                 "text": {
+                    "content": content
+                }
+            }
+        if self._wechat_msg_type == 'markdown_v2':
+            return {
+                "msgtype": "markdown_v2",
+                "markdown_v2": {
                     "content": content
                 }
             }
