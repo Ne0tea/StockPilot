@@ -2,6 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  applyOverviewSnapshot,
+  reportReferenceDateMap,
+  resetAnalysisStore,
+  setReportReferenceDate,
+} from '../stores/analysisStore.js'
+import {
   canDeleteAnalysisSession,
   getStocksStatusKind,
   hasShanghaiDayChanged,
@@ -130,6 +136,39 @@ test('prefers an html-ready today record over a markdown-only today record', () 
     report_file_path: 'reports/002594/2026-06-04.html',
     html_status: 'ready',
   })
+})
+
+test('selects a report using a supplied reference date instead of Shanghai today', () => {
+  resetAnalysisStore()
+  setReportReferenceDate('AAPL', '2026-06-18')
+
+  const record = resolveTodayReportRecord(
+    [
+      { date: '2026-06-18', markdown_file_path: 'reports/AAPL_xxx_分析报告_20260618.md' },
+      { date: '2026-06-19', markdown_file_path: 'reports/AAPL_xxx_分析报告_20260619.md' },
+    ],
+    reportReferenceDateMap.AAPL,
+  )
+
+  assert.deepEqual(record, {
+    date: '2026-06-18',
+    markdown_file_path: 'reports/AAPL_xxx_分析报告_20260618.md',
+  })
+})
+
+test('hydrates report reference dates from overview payload', () => {
+  resetAnalysisStore()
+
+  applyOverviewSnapshot({
+    stocks: [{ stock_code: 'AAPL' }],
+    report_reference_date_map: { AAPL: '2026-06-18' },
+    today_report_map: {},
+    analysis_state: {},
+    history_map: {},
+    today_date: '2026-06-19',
+  })
+
+  assert.equal(reportReferenceDateMap.AAPL, '2026-06-18')
 })
 
 test('detects when cached today date no longer matches Shanghai today', () => {

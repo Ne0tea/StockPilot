@@ -310,6 +310,7 @@ import {
 import {
   analysisState,
   todayReportMap,
+  reportReferenceDateMap,
   todayLogMap,
   stocksList,
   historyMap,
@@ -1160,15 +1161,22 @@ function canDeleteSession(code) {
 
 function hasTodayReport(code) {
   const report = todayReportMap[code]
-  return Boolean(report?.report_file_path && report?.html_status === 'ready')
+  const referenceDate = reportReferenceDateMap[code] || todayDateRef.value
+  return Boolean(
+    report?.date === referenceDate
+    && report?.report_file_path
+    && report?.html_status === 'ready',
+  )
 }
 
 function canPreviewTodayReport(code) {
-  return hasReadyTodayHtmlReport(todayReportMap[code], todayDateRef.value)
+  const referenceDate = reportReferenceDateMap[code] || todayDateRef.value
+  return hasReadyTodayHtmlReport(todayReportMap[code], referenceDate)
 }
 
 function openTodayReportPreview(code) {
-  const previewUrl = buildTodayHtmlReportPreviewUrl(todayReportMap[code], todayDateRef.value)
+  const referenceDate = reportReferenceDateMap[code] || todayDateRef.value
+  const previewUrl = buildTodayHtmlReportPreviewUrl(todayReportMap[code], referenceDate)
   if (!previewUrl) {
     return
   }
@@ -1208,8 +1216,8 @@ async function refreshTodayReportState(code) {
 
 async function fetchTodayReport(code) {
   const { data } = await getReports(code, 10)
-  const today = todayDateRef.value
-  return resolveTodayReportRecord(data, today)
+  const referenceDate = reportReferenceDateMap[code] || todayDateRef.value
+  return resolveTodayReportRecord(data, referenceDate)
 }
 
 async function openTodayLog(code) {

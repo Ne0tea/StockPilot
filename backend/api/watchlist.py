@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from db.database import get_db
 from core.analysis_task_state import get_task_status_for_code
+from core.report_storage import resolve_stock_report_date
 from db.models import Watchlist, Portfolio
 from core.report_listing import list_reports
 from core.report_renderer import REPORTS_DIR
@@ -58,6 +59,7 @@ def get_watchlist_overview(db: Session = Depends(get_db)):
 
     now = datetime.now(_SHANGHAI_TZ)
     today_str = now.strftime("%Y-%m-%d")
+    report_reference_date_map = _build_report_reference_date_map(stocks)
 
     history_map: dict[str, list] = {}
     today_report_map: dict[str, dict] = {}
@@ -68,7 +70,8 @@ def get_watchlist_overview(db: Session = Depends(get_db)):
         history = _history_rows_for_code(db, code, stock.name, limit=_HISTORY_LIMIT)
         history_map[code] = history
 
-        today_report = _resolve_today_report(history, today_str)
+        reference_date = report_reference_date_map.get(code, today_str)
+        today_report = _resolve_reference_report(history, reference_date)
         if today_report:
             today_report_map[code] = today_report
 
@@ -80,6 +83,7 @@ def get_watchlist_overview(db: Session = Depends(get_db)):
         "stocks": stocks,
         "history_map": history_map,
         "today_report_map": today_report_map,
+        "report_reference_date_map": report_reference_date_map,
         "analysis_state": analysis_state,
         "today_date": today_str,
         "server_time": now.isoformat(),
@@ -119,15 +123,43 @@ def _history_rows_for_code(db: Session, code: str, stock_name: str, limit: int |
     ]
 
 
-def _resolve_today_report(history, today):
-    for record in history or []:
-        if record.get("date") != today:
+def _build_report_reference_date_map(stock_snapshots: list[dict]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for stock in stock_snapshots or []:
+        code = (stock or {}).get("stock_code")
+        if not code:
             continue
-        if record.get("html_status") == "ready" and record.get("report_file_path"):
-            return record
-        if record.get("markdown_file_path"):
-            return record
-    return None
+        result[code] = resolve_stock_report_date(code).isoformat()
+    return result
+
+
+def _resolve_reference_report(history, reference_date):
+    if not reference_date:
+        return None
+
+    matched_records = [
+        record for record in (history or [])
+        if record.get("date") == reference_date
+    ]
+    if not matched_records:
+        return None
+
+    return (
+        next(
+            (
+                record for record in matched_records
+                if record.get("html_status") == "ready" and record.get("report_file_path")
+            ),
+            None,
+        )
+        or next(
+            (
+                record for record in matched_records
+                if record.get("markdown_file_path") or record.get("report_file_path")
+            ),
+            None,
+        )
+    )
 
 
 def _resolve_markdown_report_path(code: str, report_date, stock_name: str) -> str:

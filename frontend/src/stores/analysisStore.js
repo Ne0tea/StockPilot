@@ -6,6 +6,7 @@ export const stocksList = ref([])
 export const historyMap = reactive({})
 export const analysisState = reactive({})
 export const todayReportMap = reactive({})
+export const reportReferenceDateMap = reactive({})
 export const todayLogMap = reactive({})
 export const lastSyncedAt = ref(0)
 export const overviewCachedAt = ref(0)
@@ -54,6 +55,15 @@ export function setTodayReport(code, report) {
   todayReportMap[code] = report
 }
 
+export function setReportReferenceDate(code, value) {
+  if (!code) return
+  if (!value) {
+    delete reportReferenceDateMap[code]
+    return
+  }
+  reportReferenceDateMap[code] = value
+}
+
 export function setTodayLog(code, info) {
   if (!code) return
   if (!info) {
@@ -71,6 +81,9 @@ export function pruneAnalysisStore(validCodes) {
   for (const code of Object.keys(todayReportMap)) {
     if (!allow.has(code)) delete todayReportMap[code]
   }
+  for (const code of Object.keys(reportReferenceDateMap)) {
+    if (!allow.has(code)) delete reportReferenceDateMap[code]
+  }
   for (const code of Object.keys(todayLogMap)) {
     if (!allow.has(code)) delete todayLogMap[code]
   }
@@ -79,6 +92,7 @@ export function pruneAnalysisStore(validCodes) {
 export function resetAnalysisStore() {
   for (const code of Object.keys(analysisState)) delete analysisState[code]
   for (const code of Object.keys(todayReportMap)) delete todayReportMap[code]
+  for (const code of Object.keys(reportReferenceDateMap)) delete reportReferenceDateMap[code]
   for (const code of Object.keys(todayLogMap)) delete todayLogMap[code]
   for (const code of Object.keys(historyMap)) delete historyMap[code]
   stocksList.value = []
@@ -111,6 +125,15 @@ export function applyOverviewSnapshot(payload) {
   const incomingToday = payload.today_report_map || {}
   for (const code of Object.keys(incomingToday)) {
     todayReportMap[code] = incomingToday[code]
+  }
+
+  // Update report reference date map
+  for (const code of Object.keys(reportReferenceDateMap)) delete reportReferenceDateMap[code]
+  const incomingReferenceDates = payload.report_reference_date_map || {}
+  for (const code of Object.keys(incomingReferenceDates)) {
+    if (validCodes.includes(code) && incomingReferenceDates[code]) {
+      reportReferenceDateMap[code] = incomingReferenceDates[code]
+    }
   }
 
   // Update analysis state
