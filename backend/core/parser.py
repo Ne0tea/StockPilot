@@ -111,47 +111,59 @@ def _clean_reason_text(text: str) -> str:
     return text.strip()[:200]
 
 
+def _strip_reason_line_formatting(text: str) -> str:
+    text = re.sub(r"\*+", "", text or "")
+    text = re.sub(r"^[\-\u2022\s]+", "", text)
+    text = re.sub(r"[\U0001F300-\U0001FAFF]", "", text)
+    return text.strip()
+
+
+def _is_recommendation_only_line(text: str) -> bool:
+    normalized = _strip_reason_line_formatting(text)
+    return normalized in _RECOMMENDATION_LEVELS
+
+
+def _find_investment_conclusion_section(content: str) -> str:
+    heading_pattern = re.compile(
+        r"(?m)^#{3,4}\s*"
+        r"(?:\d+(?:\.\d+)?\s*)?"
+        r"(?:[\U0001F300-\U0001FAFF]\s*)?"
+        r"投资结论"
+        r"(?:\s*[：:].*)?\s*$"
+    )
+    match = heading_pattern.search(content)
+    if not match:
+        return ""
+
+    tail = content[match.end():]
+    stop_match = re.search(r"(?m)^##+\s|^---\s*$", tail)
+    if stop_match:
+        return tail[:stop_match.start()]
+    return tail
+
+
 def _extract_reason(content: str) -> str:
-    explicit_reason_patterns = [
-        (
-            r"(?:投资建议|投资结论)\s*[：:].*?\n+\s*(.+?)(?=\n###|\n##|\n---|\Z)",
-            1,
-        ),
-        (
-            r"(?:投资建议|投资结论)\s*\n+[*\s]*\n+(.+?)(?=\n###|\n##|\n---|\Z)",
-            1,
-        ),
-        (
-            r"\*{0,2}\s*当前结论\s*[：:]\s*[^。\n]+[。\n]?\s*\*{0,2}\s*\n+\s*(.+?)(?=\n###|\n##|\n---|\Z)",
-            1,
-        ),
-        (
-            r"综合判断\s*\n+\*{0,2}当前结论\s*[：:][^\n]*\*{0,2}\s*\n+(.+?)(?=\n###|\n##|\n---|\Z)",
-            1,
-        ),
-        (
-            r"综合投资建议.*?\n+###\s*[^\n]*\n+\s*(.+?)(?=\n\s*\| 价位类型 |\n###|\n##|\n---|\Z)",
-            1,
-        ),
-    ]
-    for pattern, group_index in explicit_reason_patterns:
-        match = re.search(pattern, content, re.DOTALL)
-        if match:
-            text = _clean_reason_text(match.group(group_index))
-            if len(text) > 10:
-                return text
+    section = _find_investment_conclusion_section(content)
+    if not section:
+        return ""
 
-    recommendation_line_patterns = [
-        r"\*{0,2}(?:强烈推荐|推荐买入|观望等待|谨慎操作|建议回避)\*{0,2}\s*\n+(.+?)(?:\n\s*\n|\n###|\n---|\Z)",
-    ]
-    for pattern in recommendation_line_patterns:
-        match = re.search(pattern, content, re.DOTALL)
-        if match:
-            text = _clean_reason_text(match.group(1))
-            if len(text) > 10:
-                return text
+    lines = [line.rstrip() for line in section.splitlines()]
+    collected: list[str] = []
+    started = False
 
-    return ""
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            if started and collected:
+                break
+            continue
+        if not started and _is_recommendation_only_line(line):
+            continue
+        started = True
+        collected.append(line)
+
+    text = _clean_reason_text("\n".join(collected))
+    return text if len(text) > 10 else ""
 
 
 def _extract_price(content: str, labels: tuple) -> Optional[float]:

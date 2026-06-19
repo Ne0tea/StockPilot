@@ -28,6 +28,8 @@ from core.session_logger import SessionLogWriter
 
 QUESTION_TIMEOUT_SECONDS = 30.0
 MAX_HTML_RETRY_ATTEMPTS = 1
+MAX_COMPLETION_NUDGE_ATTEMPTS = 2
+ANALYSIS_DONE_SENTINEL = "__ANALYSIS_DONE__"
 
 LOGIN_QUESTION_OPTIONS = ["已登录", "继续分析", "跳过"]
 AFFIRMATIVE_RESPONSES = {"已登录", "继续分析", "登录了", "allow", "允许", "yes", "y"}
@@ -153,6 +155,8 @@ class InteractiveSession:
         self.final_status = "running"
         self.final_message = ""
         self._html_retry_count = 0
+        self._analysis_done_seen = False
+        self._completion_nudge_count = 0
         self._results_task_started = False
         self._log_writer = SessionLogWriter(
             reports_root=ensure_reports_root(),
@@ -195,7 +199,10 @@ class InteractiveSession:
         try:
             await self._run_conversation()
             if self.final_status == "running":
-                self.final_status = "cancelled" if self._cancel_requested else "done"
+                self.final_status = self._resolve_terminal_status()
+                if self.final_status == "error" and not self.final_message:
+                    self.final_message = f"分析未收到完成信号 {ANALYSIS_DONE_SENTINEL}"
+                    mark_analysis_error(self.code, self.final_message)
         except Exception as exc:
             self.final_status = "error"
             self.final_message = str(exc)
@@ -286,12 +293,16 @@ class InteractiveSession:
                 if not self._running:
                     return
 
-                if next_user_reply is None:
+                if self._should_check_html_after_turn(next_user_reply):
                     if self._handle_missing_html_after_turn(move_generated_report_html(self.code, self.report_date)):
                         outgoing_message = self._build_missing_html_retry_message()
                         continue
                     self._put_event({"type": "status", "text": "正在整理最终报告..."})
                     return
+
+                if next_user_reply is None:
+                    outgoing_message = self._build_completion_nudge_message()
+                    continue
 
                 outgoing_message = next_user_reply
 
@@ -302,6 +313,8 @@ class InteractiveSession:
 
         self.output_buffer += text + "\n"
         self._put_event({"type": "output", "text": text})
+        if ANALYSIS_DONE_SENTINEL in text:
+            self._analysis_done_seen = True
 
         question = classify_assistant_question(text)
         if not question:
@@ -322,6 +335,25 @@ class InteractiveSession:
             f"请只执行 HTML 生成步骤，并将文件写入后端指定的绝对路径 `{html_target_path}`。\n"
             "完成后仅输出 `__ANALYSIS_DONE__`。"
         )
+
+    def _build_completion_nudge_message(self) -> str:
+        if self._completion_nudge_count < MAX_COMPLETION_NUDGE_ATTEMPTS:
+            self._completion_nudge_count += 1
+            return (
+                "分析流程尚未完成。请继续执行剩余步骤，不要提前结束。\n"
+                "请先完整输出 Markdown 报告，再生成 HTML 报告并写入指定路径。\n"
+                f"全部完成后仅输出 `{ANALYSIS_DONE_SENTINEL}`。"
+            )
+
+        self.final_status = "error"
+        self.final_message = f"分析未收到完成信号 {ANALYSIS_DONE_SENTINEL}"
+        mark_analysis_error(self.code, self.final_message)
+        self._put_event({"type": "error", "text": self.final_message})
+        self._running = False
+        return ""
+
+    def _should_check_html_after_turn(self, next_user_reply: Optional[str]) -> bool:
+        return next_user_reply is None and self._analysis_done_seen and self._running
 
     def _handle_missing_html_after_turn(self, html_path: str) -> bool:
         if html_path:
@@ -426,6 +458,13 @@ class InteractiveSession:
         self._running = False
         if self._pending_response is not None:
             self._pending_response.set("")
+
+    def _resolve_terminal_status(self) -> str:
+        if self._cancel_requested:
+            return "cancelled"
+        if self._analysis_done_seen:
+            return "done"
+        return "error"
 
 
 def start_session(code: str, name: str, auto_respond: bool = False) -> Optional["InteractiveSession"]:
