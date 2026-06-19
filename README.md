@@ -1,6 +1,27 @@
 # StockPilot
 
-StockPilot is a local stock analysis workspace built with FastAPI, Vue 3, and SQLite. It combines watchlist management, report archiving, portfolio tracking, scheduled notifications, interactive analysis, and specialist agent workflows in one web app.
+**StockPilot is an AI-powered investment research workbench — not a real-time
+quote terminal, and not a one-off chat session.** It's built for long-term,
+conviction-driven investors who track a small, focused set of stocks and want
+their AI-generated analysis to persist, accumulate, and be revisited — not
+disappear at the end of a chat.
+
+Powered by LLM agents and a FastAPI + Vue 3 + SQLite stack, StockPilot turns
+ad-hoc "ask an AI about a stock" into a structured, repeatable research workflow:
+daily reports, position-aware specialist analysis, and a searchable archive
+of everything the AI has told you, all stored locally.
+
+## Why StockPilot
+
+- **Not a quote/monitoring tool** — no tick-by-tick feeds or minute-level
+  alerts. StockPilot is for deep, periodic research on stocks you actually hold
+  or are seriously considering, not for watching the market all day.
+- **Not a disposable chat** — every AI analysis is saved as structured
+  Markdown/HTML and indexed in SQLite, so you can trace how your thesis on a
+  stock evolved over weeks or months.
+- **Built for a focused watchlist, not the whole market** — designed around
+  a handful of stocks you actually care about, with agents that understand
+  your current positions, not generic market-wide scanning.
 
 ## Screenshots
 
@@ -8,14 +29,10 @@ StockPilot is a local stock analysis workspace built with FastAPI, Vue 3, and SQ
 
 ![StockPilot Main Interface](./StockPilot.png)
 
-![StockPilot User Guide](./StockPilot_guide.png)
+![StockPilot analysis](./StockPilot_stocks.png)
 
 ## Overview
-
-StockPilot is designed for users who want to run a personal stock-analysis workflow locally instead of relying on temporary chat sessions.
-
 It provides:
-
 - Watchlist management with per-stock and bulk analysis
 - Structured daily report storage in SQLite and on disk
 - Portfolio position tracking and profit history
@@ -24,50 +41,9 @@ It provides:
 - Specialist agent analysis for currently held positions
 
 ## Highlights
-
-- Local web application with FastAPI backend and Vue 3 frontend
-- SQLite-based persistence for watchlist, reports, portfolio, settings, and notification logs
 - Report artifacts saved as Markdown and HTML files under `backend/reports/`
-- SSE-based streaming for interactive analysis and agent sessions
 - Built-in report rescanning and analysis-history cleanup endpoints
 - Settings page for daily-report LLM config, specialist-agent LLM config, and TickFlow API key storage
-
-## Architecture
-
-### Backend
-
-- Entry point: `backend/main.py`
-- Framework: FastAPI
-- Persistence: SQLAlchemy + SQLite
-- Scheduler: APScheduler
-- Static report hosting: `/reports`
-
-### Frontend
-
-- Entry point: `frontend/src/main.js`
-- Framework: Vue 3 + Vite
-- UI library: Element Plus
-- Charts: ECharts
-
-### Storage
-
-- Web app database: `backend/data/stock_analysis_app.db`
-- Core database helpers also resolve paths under `backend/data/`
-- Generated report files: `backend/reports/`
-
-## Prerequisites
-
-- Python `3.10+`
-- Node.js `18+`
-- npm
-- A local `claude` CLI installation for daily-report and interactive analysis flows
-
-Optional but feature-dependent:
-
-- SMTP account and app password for email notifications
-- WeCom webhook for enterprise WeChat notifications
-- OpenAI-compatible API credentials for specialist agent analysis
-- TickFlow API key for TickFlow-backed market data features
 
 ## Quick Start
 
@@ -89,72 +65,8 @@ cd ..
 
 ### 3. Start the application
 
-Option A: start backend and frontend separately.
-
-```bash
-cd backend
-python main.py
-```
-
-In another terminal:
-
-```bash
-cd frontend
-npm run dev
-```
-
-Option B: use the provided helper script in this repository.
-
 ```bash
 bash start.sh
-```
-
-Windows helper:
-
-```bat
-start.bat
-```
-
-After startup:
-
-- Frontend: `http://127.0.0.1:5173`
-- Backend: `http://127.0.0.1:8000`
-- API docs: `http://127.0.0.1:8000/docs`
-
-## Common Commands
-
-### Backend
-
-```bash
-cd backend
-python main.py
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm run dev
-```
-
-### Frontend production build
-
-```bash
-cd frontend
-npm run build
-```
-
-### Frontend preview
-
-```bash
-cd frontend
-npm run preview
-```
-
-### Run frontend utility tests
-
-```bash
-node --test frontend/src/utils/*.test.js
 ```
 
 ## Runtime Flows
@@ -164,7 +76,7 @@ node --test frontend/src/utils/*.test.js
 1. Add a stock from the Stocks page or `POST /api/watchlist`.
 2. Trigger one stock or the whole watchlist through the analysis endpoints.
 3. The backend queues work and runs analysis in FIFO order.
-4. The daily-report flow invokes the local `claude` CLI.
+4. The daily-report flow invokes the local `claude code`.
 5. Generated Markdown is parsed into structured report fields and stored in SQLite.
 6. Report artifacts are saved under `backend/reports/`.
 
@@ -174,17 +86,6 @@ Outputs:
 - Markdown report files
 - HTML reports when generated
 - Analysis status information for the frontend
-
-### Interactive Analysis
-
-Interactive analysis sessions are exposed through:
-
-- `POST /api/analyze/{code}/interactive`
-- `GET /api/analyze/{code}/stream`
-- `POST /api/analyze/{code}/respond`
-- `DELETE /api/analyze/{code}/session`
-
-This flow streams intermediate status, tool-permission prompts, assistant output, and session completion events to the frontend.
 
 ### Specialist Agent Analysis
 
@@ -255,11 +156,9 @@ The backend applies this value to the `TICKFLOW_API_KEY` environment variable at
 
 ## Known Boundaries
 
-- Daily report generation depends on a local `claude` executable.
+- Daily report generation depends on a local `claude code`.
 - Interactive analysis also depends on Claude-based local tooling.
 - Specialist agent analysis requires OpenAI-compatible credentials saved in Settings.
-- No standalone `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, or `CHANGELOG.md` file was found at the repository root.
-- No CI workflow or Docker setup was found in the repository root.
 
 ## License
 
