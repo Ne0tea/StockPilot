@@ -50,6 +50,7 @@ It provides:
 ### 1. Install Python dependencies
 
 Install from the repository root because the backend imports packages listed in the top-level `requirements.txt`.
+python==3.11
 
 ```bash
 pip install -r requirements.txt

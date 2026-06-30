@@ -37,6 +37,7 @@ def _build_recommendation_capture_group() -> str:
 
 
 _RECOMMENDATION_CAPTURE = _build_recommendation_capture_group()
+_REASON_LINE_EMOJI = r"[\u2600-\u27BF\U0001F300-\U0001FAFF]"
 
 
 def _normalize_recommendation_label(text: str) -> str:
@@ -114,20 +115,48 @@ def _clean_reason_text(text: str) -> str:
 def _strip_reason_line_formatting(text: str) -> str:
     text = re.sub(r"\*+", "", text or "")
     text = re.sub(r"^[\-\u2022\s]+", "", text)
-    text = re.sub(r"[\U0001F300-\U0001FAFF]", "", text)
+    text = re.sub(_REASON_LINE_EMOJI, "", text)
+    text = text.replace("\ufe0f", "")
     return text.strip()
 
 
 def _is_recommendation_only_line(text: str) -> bool:
     normalized = _strip_reason_line_formatting(text)
-    return normalized in _RECOMMENDATION_LEVELS
+    if normalized in _RECOMMENDATION_LEVELS:
+        return True
+
+    for token in _RECOMMENDATION_LEVELS:
+        if not normalized.startswith(token):
+            continue
+        suffix = normalized[len(token):].strip()
+        if not suffix:
+            return True
+        if re.fullmatch(r"[（(][^）)]{1,12}[）)]", suffix):
+            return True
+        if re.fullmatch(r"[-—–:：]?\s*评分\s*\d+(?:\.\d+)?\s*/\s*10", suffix):
+            return True
+        if re.fullmatch(r"[（(][^）)]*[）)]\s*[-—–:：]?\s*评分\s*\d+(?:\.\d+)?\s*/\s*10", suffix):
+            return True
+    return False
+
+
+def _extract_explicit_conclusion_line(section: str) -> str:
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        normalized = _strip_reason_line_formatting(line)
+        match = re.match(r"^结论\s*[：:]\s*(.+)$", normalized)
+        if match:
+            return _clean_reason_text(match.group(1))
+    return ""
 
 
 def _find_investment_conclusion_section(content: str) -> str:
     heading_pattern = re.compile(
         r"(?m)^#{3,4}\s*"
         r"(?:\d+(?:\.\d+)?\s*)?"
-        r"(?:[\U0001F300-\U0001FAFF]\s*)?"
+        r"(?:" + _REASON_LINE_EMOJI + r"\s*)?"
         r"投资结论"
         r"(?:\s*[：:].*)?\s*$"
     )
@@ -147,6 +176,10 @@ def _extract_reason(content: str) -> str:
     if not section:
         return ""
 
+    explicit_conclusion = _extract_explicit_conclusion_line(section)
+    if len(explicit_conclusion) > 10:
+        return explicit_conclusion
+
     lines = [line.rstrip() for line in section.splitlines()]
     collected: list[str] = []
     started = False
@@ -154,10 +187,8 @@ def _extract_reason(content: str) -> str:
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
-            if started and collected:
-                break
             continue
-        if not started and _is_recommendation_only_line(line):
+        if _is_recommendation_only_line(line):
             continue
         started = True
         collected.append(line)
