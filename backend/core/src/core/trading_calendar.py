@@ -15,7 +15,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
@@ -287,8 +287,10 @@ def get_notification_report_date(
     """
     try:
         lookup = _resolve_market_session_lookup(market, current_time=current_time)
-        if not lookup.known_market or not lookup.calendar_available:
+        if not lookup.known_market:
             return lookup.fallback_date
+        if not lookup.calendar_available:
+            return _fallback_notification_report_date(lookup.market_now, market)
         if lookup.is_session is False:
             return lookup.previous_session_date or lookup.fallback_date
         if lookup.session_open is None:
@@ -298,7 +300,19 @@ def get_notification_report_date(
         return lookup.fallback_date
     except Exception as e:
         logger.warning("trading_calendar.get_notification_report_date fail-open: %s", e)
-        return get_market_now(market, current_time=current_time).date()
+        market_now = get_market_now(market, current_time=current_time)
+        return _fallback_notification_report_date(market_now, market)
+
+
+def _fallback_notification_report_date(market_now: datetime, market: Optional[str]) -> date:
+    """Best-effort fallback when exchange calendars are unavailable or out of range."""
+    if market not in MARKET_TIMEZONE:
+        return market_now.date()
+
+    if market_now.weekday() >= 5 or market_now.time() < time(9, 30):
+        return (pd.Timestamp(market_now.date()) - pd.offsets.BDay(1)).date()
+
+    return market_now.date()
 
 
 def _as_market_datetime(value: Any, tz_name: str) -> Optional[datetime]:

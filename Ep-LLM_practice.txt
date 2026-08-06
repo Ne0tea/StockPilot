@@ -1,0 +1,4 @@
+1.5wDML_Hotpot  /share/home/zhanglab/user/huangyujie/PWS_lr/EpiOrigin/Build_origin.tsv.gz
+1.5wDML_Hotpot flank 500bp  /share/home/zhanglab/user/huangyujie/PWS_lr/EpiOrigin/LLM_test/CpG_flank500_seq.fasta
+1.5wDML_Hotpot flank 200 CpG mat    /share/home/zhanglab/user/huangyujie/PWS_lr/EpiOrigin/LLM_test/CpG_mat_aligned.methy
+1.5wDML_Hotpot flank 200 CpG pat    /share/home/zhanglab/user/huangyujie/PWS_lr/EpiOrigin/LLM_test/CpG_pat_aligned.methy

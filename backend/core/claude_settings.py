@@ -19,9 +19,11 @@ def build_claude_settings_payload(settings_row: Any) -> Dict[str, Any]:
     base_url = _clean_str(getattr(settings_row, "claude_base_url", ""))
 
     env: Dict[str, str] = {}
-    if api_key:
+    if api_key or auth_token:
+        # Keep both credential names in the project settings.  In particular,
+        # an explicit empty token overrides a stale user-level token from
+        # ~/.claude/settings.json, allowing ANTHROPIC_API_KEY to take effect.
         env["ANTHROPIC_API_KEY"] = api_key
-    if auth_token:
         env["ANTHROPIC_AUTH_TOKEN"] = auth_token
     if base_url:
         env["ANTHROPIC_BASE_URL"] = base_url

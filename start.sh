@@ -1,4 +1,12 @@
 #!/bin/bash
+###
+ # @Descripttion: 
+ # @Author: Ne0tea
+ # @version: 
+ # @Date: 2026-06-30 21:08:54
+ # @LastEditors: Ne0tea
+ # @LastEditTime: 2026-06-30 21:08:54
+### 
 set -e
 
 echo "Starting Stock Analysis Dashboard..."
@@ -11,8 +19,8 @@ sleep 1
 
 # 启动后端
 echo "启动后端..."
-cd /mnt/d/Bio_analysis/software/Stock_analysis/backend
-/home/ne0tea/miniconda3/envs/stockPanel/bin/python main.py > /tmp/stock_backend.log 2>&1 &
+cd ./backend
+python main.py > /tmp/stock_backend.log 2>&1 &
 BACKEND_PID=$!
 
 # 等待后端启动
@@ -39,7 +47,7 @@ fi
 
 # 启动前端
 echo "启动前端..."
-cd /mnt/d/Bio_analysis/software/Stock_analysis/frontend
+cd ../frontend
 npm run dev > /tmp/stock_frontend.log 2>&1 &
 FRONTEND_PID=$!
 
