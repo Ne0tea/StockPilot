@@ -1,10 +1,11 @@
+import asyncio
 import json
 import re
 from datetime import date as _date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -13,7 +14,6 @@ from core.analysis_task_state import get_task_status_for_code
 from core.analysis_cleanup import clear_today_analysis_artifacts
 from core.interactive import (
     get_session,
-    remove_session,
     respond_session,
     start_session,
 )
@@ -108,7 +108,10 @@ async def start_interactive(
 
 
 @router.get("/analyze/{code}/stream")
-async def stream_events(code: str):
+async def stream_events(
+    code: str,
+    after_event_id: Optional[int] = Query(default=None, ge=0),
+):
     """SSE endpoint — streams real-time analysis events to the client.
 
     Event types:
@@ -128,25 +131,35 @@ async def stream_events(code: str):
             yield f"data: {payload}\n\n"
             return
 
-        while True:
-            event = await session.get_event()
-            if event is None:
-                break
 
-            if event.get("type") == "heartbeat":
-                # Must be a `data:` line, not an SSE comment (`:ping`).
-                # EventSource silently ignores comment lines and never fires
-                # `onmessage`, so a bare `:ping` would not refresh the client's
-                # inactivity watchdog and the client would reconnect on every
-                # quiet phase > 30s. Sending it as data lets onmessage fire.
-                yield "data: :ping\n\n"
-                continue
+        generation = None
+        try:
+            loop = asyncio.get_running_loop()
+            replay = session.attach_loop(loop, after_event_id=after_event_id)
+            generation = session.connection_generation
+            pending_events = replay
+            while True:
+                if generation != session.connection_generation:
+                    break
+                event = pending_events.pop(0) if pending_events else await session.get_event(generation)
+                if event is None:
+                    break
 
-            payload = json.dumps(event, ensure_ascii=False)
-            yield f"data: {payload}\n\n"
+                if event.get("type") == "heartbeat":
+                    # Keep the existing data heartbeat contract for clients.
+                    yield "data: :ping\n\n"
+                    continue
 
-            if event.get("type") == "session_end":
-                break
+                payload = json.dumps(event, ensure_ascii=False)
+                event_id = event.get("event_id")
+                prefix = f"id: {event_id}\n" if event_id is not None else ""
+                yield f"{prefix}data: {payload}\n\n"
+
+                if event.get("type") == "session_end":
+                    break
+        finally:
+            if generation is not None:
+                session.detach_loop_for_generation(generation)
 
     return StreamingResponse(
         event_generator(),
@@ -174,7 +187,6 @@ async def cancel_session(code: str, db: Session = Depends(get_db)):
     session = get_session(code)
     if session:
         session.cancel()
-    remove_session(code)
     cleanup = clear_today_analysis_artifacts(
         db,
         stock_code=code,

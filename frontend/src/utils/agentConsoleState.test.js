@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  AGENT_CONSOLE_DIAGNOSTIC_LIMIT,
+  AGENT_CONSOLE_EVENT_LIMIT,
+  AGENT_CONSOLE_TOOL_CALL_LIMIT,
   applyAgentConsoleEvent,
   createAgentConsoleState,
   isAgentConsoleTerminalState,
@@ -178,4 +181,29 @@ test('ignores unknown events except for recording them in the timeline', () => {
       payload: 123,
     },
   ])
+})
+
+test('bounds timeline, tool call, and diagnostic collections', () => {
+  let eventState = createAgentConsoleState()
+
+  for (let index = 0; index < AGENT_CONSOLE_EVENT_LIMIT + 10; index += 1) {
+    eventState = applyAgentConsoleEvent(eventState, { type: 'status', text: `status-${index}` })
+  }
+
+  let toolState = createAgentConsoleState()
+  for (let index = 0; index < AGENT_CONSOLE_TOOL_CALL_LIMIT + 10; index += 1) {
+    toolState = applyAgentConsoleEvent(toolState, { type: 'tool', tool: `tool-${index}` })
+  }
+
+  let diagnosticState = createAgentConsoleState()
+  for (let index = 0; index < AGENT_CONSOLE_DIAGNOSTIC_LIMIT + 10; index += 1) {
+    diagnosticState = applyAgentConsoleEvent(diagnosticState, { type: 'diagnostic', text: `diagnostic-${index}` })
+  }
+
+  assert.equal(eventState.events.length, AGENT_CONSOLE_EVENT_LIMIT)
+  assert.equal(toolState.toolCalls.length, AGENT_CONSOLE_TOOL_CALL_LIMIT)
+  assert.equal(diagnosticState.diagnostics.length, AGENT_CONSOLE_DIAGNOSTIC_LIMIT)
+  assert.equal(eventState.events[0].text, 'status-10')
+  assert.equal(toolState.toolCalls[0].tool, 'tool-10')
+  assert.equal(diagnosticState.diagnostics[0].text, 'diagnostic-10')
 })

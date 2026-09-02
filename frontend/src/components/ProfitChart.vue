@@ -48,7 +48,10 @@ function handleResize() {
 
 function render() {
   if (!props.history.length) {
-    chart?.clear()
+    if (chart) {
+      chart.dispose()
+      chart = null
+    }
     return
   }
   if (!chartRef.value) return

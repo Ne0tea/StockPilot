@@ -12,10 +12,46 @@ set -e
 echo "Starting Stock Analysis Dashboard..."
 echo ""
 
-# 清理旧进程
-pkill -f "python.*main.py" 2>/dev/null || true
-pkill -f "npm.*dev" 2>/dev/null || true
-sleep 1
+# 优雅停止进程：先发送 SIGTERM，最多等待 120 秒，再发送 SIGKILL。
+stop_process_until() {
+    local pid="$1"
+    local label="$2"
+    local deadline="$3"
+
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    echo "发送 SIGTERM 到 $label (PID: $pid)"
+    kill -TERM "$pid" 2>/dev/null || true
+    while kill -0 "$pid" 2>/dev/null; do
+        process_state=$(ps -o stat= -p "$pid" 2>/dev/null || true)
+        case "$process_state" in
+            Z*) break ;;
+        esac
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "$label 未在 120 秒内退出，发送 SIGKILL"
+            kill -KILL "$pid" 2>/dev/null || true
+            break
+        fi
+        sleep 1
+    done
+    wait "$pid" 2>/dev/null || true
+}
+
+stop_matching() {
+    local pattern="$1"
+    local label="$2"
+    local pid
+    local deadline=$((SECONDS + 120))
+
+    for pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
+        [ "$pid" = "$$" ] && continue
+        stop_process_until "$pid" "$label" "$deadline"
+    done
+}
+
+stop_matching "python.*main.py" "旧后端"
+stop_matching "npm.*dev" "旧前端"
 
 # 启动后端
 echo "启动后端..."
@@ -41,7 +77,7 @@ done
 if ! curl -s http://localhost:8000/api/watchlist > /dev/null 2>&1; then
     echo "✗ 后端启动超时，查看日志："
     tail -50 /tmp/stock_backend.log
-    kill $BACKEND_PID 2>/dev/null || true
+    stop_process_until "$BACKEND_PID" "后端" "$((SECONDS + 120))"
     exit 1
 fi
 
@@ -61,7 +97,7 @@ for i in {1..20}; do
     if ! kill -0 $FRONTEND_PID 2>/dev/null; then
         echo "✗ 前端启动失败，查看日志："
         tail -50 /tmp/stock_frontend.log
-        kill $BACKEND_PID 2>/dev/null || true
+        stop_process_until "$BACKEND_PID" "后端" "$((SECONDS + 120))"
         exit 1
     fi
     sleep 1
@@ -83,18 +119,21 @@ echo "=========================================="
 echo ""
 
 # 清理函数
+cleanup_done=0
 cleanup() {
+    if [ "$cleanup_done" -eq 1 ]; then
+        return
+    fi
+    cleanup_done=1
     echo ""
     echo "正在停止服务..."
-    kill $BACKEND_PID 2>/dev/null || true
-    kill $FRONTEND_PID 2>/dev/null || true
-    pkill -P $BACKEND_PID 2>/dev/null || true
-    pkill -P $FRONTEND_PID 2>/dev/null || true
+    local deadline=$((SECONDS + 120))
+    stop_process_until "$BACKEND_PID" "后端" "$deadline"
+    stop_process_until "$FRONTEND_PID" "前端" "$deadline"
     echo "服务已停止"
-    exit 0
 }
 
 trap cleanup EXIT INT TERM
 
 # 保持运行
-wait
+wait || true

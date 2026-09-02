@@ -128,11 +128,10 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   cancelAgentStream,
-  endAgentChat,
   getAgentSkills,
   sendAgentMessage,
   startAgentChatStream,
@@ -156,10 +155,23 @@ const sessionId = ref('')
 const inputText = ref('')
 const runLoading = ref(false)
 const followupLoading = ref(false)
+const cancelLoading = ref(false)
 const historyRef = ref(null)
 const eventSourceRef = ref(null)
 const consoleState = ref(createAgentConsoleState())
 const followupMessages = ref([])
+
+let mounted = true
+let componentGeneration = 0
+let connectionGeneration = 0
+let reconnectTimer = null
+let reconnectAttempt = 0
+let lastEventId = 0
+let reconnectNoticeShown = false
+let skillRequestController = null
+let startRequestController = null
+let followupRequestController = null
+let cancelRequestController = null
 
 const hasStarted = computed(() => Boolean(sessionId.value))
 const analysisRunning = computed(() => runLoading.value || (hasStarted.value && !isAgentConsoleTerminalState(consoleState.value)))
@@ -215,7 +227,7 @@ const resultText = computed(() => {
 watch(() => props.modelValue, async (nextValue) => {
   visible.value = nextValue
   if (nextValue) {
-    await loadSkills()
+    await loadSkills(componentGeneration)
     return
   }
   resetState()
@@ -236,31 +248,95 @@ function pushConsoleEvent(event) {
 
 function closeEventStream() {
   if (eventSourceRef.value) {
+    eventSourceRef.value.onopen = null
+    eventSourceRef.value.onmessage = null
+    eventSourceRef.value.onerror = null
     eventSourceRef.value.close()
     eventSourceRef.value = null
   }
 }
 
-async function loadSkills() {
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+}
+
+function abortPendingRequests() {
+  skillRequestController?.abort()
+  startRequestController?.abort()
+  followupRequestController?.abort()
+  cancelRequestController?.abort()
+  skillRequestController = null
+  startRequestController = null
+  followupRequestController = null
+  cancelRequestController = null
+}
+
+function invalidateLifecycle() {
+  componentGeneration += 1
+  connectionGeneration += 1
+  clearReconnectTimer()
+  closeEventStream()
+  abortPendingRequests()
+  reconnectAttempt = 0
+  reconnectNoticeShown = false
+  return componentGeneration
+}
+
+function isCurrentLifecycle(generation, currentSessionId = '') {
+  return mounted
+    && generation === componentGeneration
+    && (!currentSessionId || currentSessionId === sessionId.value)
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED'
+}
+
+async function loadSkills(generation = componentGeneration) {
   if (skills.value.length) return
+  const controller = new AbortController()
+  skillRequestController = controller
   try {
-    const { data } = await getAgentSkills()
+    const { data } = await getAgentSkills({ signal: controller.signal })
+    if (!isCurrentLifecycle(generation)) return
     skills.value = data.skills || []
     if (skills.value.length && !selectedSkill.value) {
       selectedSkill.value = skills.value[0].name
     }
   } catch (error) {
+    if (!isCurrentLifecycle(generation) || isAbortError(error)) return
     ElMessage.error(extractErrorMessage(error, '加载策略列表失败'))
+  } finally {
+    if (skillRequestController === controller) skillRequestController = null
   }
 }
 
-function connectStream(currentSessionId) {
-  closeEventStream()
+function connectStream(currentSessionId, generation = componentGeneration) {
+  if (!isCurrentLifecycle(generation, currentSessionId) || isAgentConsoleTerminalState(consoleState.value)) return
 
-  const stream = new EventSource(`/api/agent/chat/${encodeURIComponent(currentSessionId)}/stream`)
+  closeEventStream()
+  clearReconnectTimer()
+  const currentConnectionGeneration = ++connectionGeneration
+  const query = lastEventId > 0 ? '?after_event_id=' + encodeURIComponent(lastEventId) : ''
+  const stream = new EventSource(
+    '/api/agent/chat/' + encodeURIComponent(currentSessionId) + '/stream' + query,
+  )
   eventSourceRef.value = stream
 
+  stream.onopen = () => {
+    if (!isCurrentLifecycle(generation, currentSessionId) || currentConnectionGeneration !== connectionGeneration) return
+    if (reconnectNoticeShown) {
+      pushConsoleEvent({ type: 'status', text: '事件流已恢复，后台分析继续进行' })
+    }
+    reconnectAttempt = 0
+    reconnectNoticeShown = false
+  }
+
   stream.onmessage = (rawEvent) => {
+    if (!isCurrentLifecycle(generation, currentSessionId) || currentConnectionGeneration !== connectionGeneration) return
     let event
     try {
       event = JSON.parse(rawEvent.data)
@@ -268,49 +344,72 @@ function connectStream(currentSessionId) {
       return
     }
 
-    pushConsoleEvent(event)
+    const eventId = Number(event.event_id ?? rawEvent.lastEventId)
+    if (Number.isFinite(eventId) && eventId > 0) {
+      if (eventId <= lastEventId) return
+      lastEventId = eventId
+    }
 
+    if (event.code === 'stream_busy') {
+      closeEventStream()
+      scheduleReconnect(currentSessionId, generation)
+      return
+    }
+    pushConsoleEvent(event)
     if (event.type === 'session_end') {
       runLoading.value = false
+      clearReconnectTimer()
       closeEventStream()
     }
   }
 
   stream.onerror = () => {
-    if (isAgentConsoleTerminalState(consoleState.value)) {
-      closeEventStream()
-      return
-    }
-
-    pushConsoleEvent({
-      type: 'diagnostic',
-      code: 'stream_error',
-      text: '专项分析事件流连接中断，请查看当前日志并考虑重新发起分析。',
-    })
-    pushConsoleEvent({
-      type: 'session_end',
-      status: 'error',
-      text: '事件流连接中断',
-    })
-    runLoading.value = false
+    if (!isCurrentLifecycle(generation, currentSessionId) || currentConnectionGeneration !== connectionGeneration) return
     closeEventStream()
+    if (isAgentConsoleTerminalState(consoleState.value)) return
+
+    if (!reconnectNoticeShown) {
+      pushConsoleEvent({
+        type: 'diagnostic',
+        code: 'stream_disconnected',
+        text: '专项分析事件流连接中断，后台继续分析，正在自动重连。',
+      })
+      reconnectNoticeShown = true
+    }
+    scheduleReconnect(currentSessionId, generation)
   }
+}
+
+function scheduleReconnect(currentSessionId, generation) {
+  if (reconnectTimer || !isCurrentLifecycle(generation, currentSessionId)) return
+  const delay = Math.min(1000 * (2 ** reconnectAttempt), 30000)
+  reconnectAttempt += 1
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connectStream(currentSessionId, generation)
+  }, delay)
 }
 
 async function startChat() {
   if (!props.stock?.stock_code || !selectedSkill.value) return
 
   resetState({ preserveSkills: true, preserveVisible: true })
+  const generation = componentGeneration
+  const controller = new AbortController()
+  startRequestController = controller
   runLoading.value = true
   pushConsoleEvent({ type: 'status', text: '正在创建专项分析会话' })
 
   try {
-    const { data } = await startAgentChatStream(props.stock.stock_code, selectedSkill.value)
+    const { data } = await startAgentChatStream(props.stock.stock_code, selectedSkill.value, {
+      signal: controller.signal,
+    })
+    if (!isCurrentLifecycle(generation)) return
 
     if (data.error) {
       ElMessage.error(data.error)
       pushConsoleEvent({ type: 'diagnostic', code: 'start_error', text: data.error })
-      pushConsoleEvent({ type: 'session_end', status: 'error', text: data.error })
+      pushConsoleEvent({ type: 'status', status: 'error', text: data.error })
       runLoading.value = false
       return
     }
@@ -321,13 +420,19 @@ async function startChat() {
       pushConsoleEvent({ type: 'prompt', text: data.background_prompt })
     }
     pushConsoleEvent({ type: 'status', text: '启动请求已接受，正在连接事件流' })
-    connectStream(data.session_id)
+    lastEventId = 0
+    reconnectAttempt = 0
+    reconnectNoticeShown = false
+    connectStream(data.session_id, generation)
   } catch (error) {
+    if (!isCurrentLifecycle(generation) || isAbortError(error)) return
     const message = extractErrorMessage(error, '启动分析失败')
     ElMessage.error(message)
     pushConsoleEvent({ type: 'diagnostic', code: 'start_error', text: message })
-    pushConsoleEvent({ type: 'session_end', status: 'error', text: message })
+    pushConsoleEvent({ type: 'status', status: 'error', text: message })
     runLoading.value = false
+  } finally {
+    if (startRequestController === controller) startRequestController = null
   }
 }
 
@@ -335,62 +440,83 @@ async function sendFollowup() {
   const message = inputText.value.trim()
   if (!message || !canFollowup.value) return
 
+  const generation = componentGeneration
+  const currentSessionId = sessionId.value
+  const controller = new AbortController()
+  followupRequestController = controller
   followupMessages.value.push({ role: 'user', text: message })
   inputText.value = ''
   followupLoading.value = true
-  await scrollFollowups()
+  await scrollFollowups(generation)
 
   try {
-    const { data } = await sendAgentMessage(sessionId.value, selectedSkill.value, message)
+    const { data } = await sendAgentMessage(currentSessionId, selectedSkill.value, message, {
+      signal: controller.signal,
+    })
+    if (!isCurrentLifecycle(generation, currentSessionId)) return
     if (data.error) {
       ElMessage.error(data.error)
       followupMessages.value.push({ role: 'assistant', text: `[失败] ${data.error}` })
     } else {
       followupMessages.value.push({ role: 'assistant', text: data.reply || '（后续追问未返回内容）' })
     }
-    await scrollFollowups()
+    await scrollFollowups(generation)
   } catch (error) {
+    if (!isCurrentLifecycle(generation, currentSessionId) || isAbortError(error)) return
     const failure = extractErrorMessage(error, '发送失败')
     ElMessage.error(failure)
     followupMessages.value.push({ role: 'assistant', text: `[失败] ${failure}` })
-    await scrollFollowups()
+    await scrollFollowups(generation)
   } finally {
-    followupLoading.value = false
+    if (followupRequestController === controller) followupRequestController = null
+    if (isCurrentLifecycle(generation, currentSessionId)) followupLoading.value = false
   }
 }
 
 async function cancelRun() {
   if (!sessionId.value || isAgentConsoleTerminalState(consoleState.value)) return
 
+  const generation = componentGeneration
+  const currentSessionId = sessionId.value
+  if (cancelLoading.value) return
+  cancelLoading.value = true
+  const controller = new AbortController()
+  cancelRequestController = controller
   closeEventStream()
-  runLoading.value = false
-  pushConsoleEvent({ type: 'diagnostic', code: 'cancelled', text: '用户已取消本次专项分析' })
-  pushConsoleEvent({ type: 'session_end', status: 'cancelled', text: '分析已取消' })
+  clearReconnectTimer()
+  pushConsoleEvent({ type: 'status', status: 'running', text: '正在取消专项分析' })
 
   try {
-    await cancelAgentStream(sessionId.value)
-  } catch (_) {
-    // The UI has already been switched to cancelled state; ignore teardown failures.
+    await cancelAgentStream(currentSessionId, { signal: controller.signal })
+    if (!isCurrentLifecycle(generation, currentSessionId)) return
+    pushConsoleEvent({ type: 'diagnostic', code: 'cancelled', text: '用户已取消本次专项分析' })
+    pushConsoleEvent({ type: 'status', status: 'running', text: '取消请求已发送，等待后台确认' })
+    connectStream(currentSessionId, generation)
+  } catch (error) {
+    if (!isCurrentLifecycle(generation, currentSessionId) || isAbortError(error)) return
+    ElMessage.error(extractErrorMessage(error, '取消分析失败，后台分析仍在继续'))
+    pushConsoleEvent({
+      type: 'diagnostic',
+      code: 'cancel_error',
+      text: '取消请求失败，后台分析仍在继续，正在恢复事件流连接。',
+    })
+    connectStream(currentSessionId, generation)
+  } finally {
+    if (cancelRequestController === controller) cancelRequestController = null
+    if (isCurrentLifecycle(generation, currentSessionId)) cancelLoading.value = false
   }
 }
 
-async function scrollFollowups() {
+async function scrollFollowups(generation = componentGeneration) {
   await nextTick()
-  if (historyRef.value) {
+  if (isCurrentLifecycle(generation) && historyRef.value) {
     historyRef.value.scrollTop = historyRef.value.scrollHeight
   }
 }
 
-async function handleClose() {
-  closeEventStream()
-  if (sessionId.value) {
-    try {
-      await endAgentChat(sessionId.value)
-    } catch (_) {
-      // Ignore cleanup failures while closing the dialog.
-    }
-  }
-  resetState({ preserveSkills: true, preserveVisible: true })
+function handleClose() {
+  invalidateLifecycle()
+  resetState({ preserveSkills: true, preserveVisible: true, invalidate: false })
   visible.value = false
 }
 
@@ -402,13 +528,14 @@ function toggleDetails() {
 }
 
 function resetState(options = {}) {
-  const { preserveSkills = false, preserveVisible = false } = options
+  const { preserveSkills = false, preserveVisible = false, invalidate = true } = options
 
-  closeEventStream()
+  if (invalidate) invalidateLifecycle()
   sessionId.value = ''
   inputText.value = ''
   runLoading.value = false
   followupLoading.value = false
+  cancelLoading.value = false
   followupMessages.value = []
   consoleState.value = createAgentConsoleState()
 
@@ -420,6 +547,11 @@ function resetState(options = {}) {
     visible.value = false
   }
 }
+
+onBeforeUnmount(() => {
+  mounted = false
+  invalidateLifecycle()
+})
 
 function formatStatusEvent(event) {
   return event.text || event.message || '状态已更新'

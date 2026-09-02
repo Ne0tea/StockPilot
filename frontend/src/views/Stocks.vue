@@ -363,6 +363,14 @@ const pendingQuestion = ref(null)
 const userInput = ref('')
 const outputRef = ref(null)
 let eventSource = null
+let pageGeneration = 0
+let sseConnectionGeneration = 0
+let lastSSEEventId = 0
+
+function isCurrentPage(generation) {
+  return generation === pageGeneration
+}
+
 
 // ── Agent专项分析 dialog state ─────────────────────────────────────────────
 const agentDialogVisible = ref(false)
@@ -377,15 +385,19 @@ function openAgentDialog(row) {
 }
 
 onMounted(async () => {
+  const generation = ++pageGeneration
   if (!isOverviewCacheFresh() || stocksList.value.length === 0) {
-    await loadOverview({ silent: false })
+    await loadOverview({ silent: false, generation })
   }
+  if (!isCurrentPage(generation)) return
   startStatusPoll()
   startDayChangeWatcher()
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onUnmounted(() => {
+  pageGeneration += 1
+  sseConnectionGeneration += 1
   closeSSE()
   closeAllBulkSSE()
   stopLogAutoRefresh()
@@ -423,7 +435,7 @@ function handleVisibilityChange() {
   }
 }
 
-async function loadOverview({ silent = true } = {}) {
+async function loadOverview({ silent = true, generation = pageGeneration } = {}) {
   let response
   try {
     response = await getWatchlistOverview()
@@ -433,8 +445,9 @@ async function loadOverview({ silent = true } = {}) {
     }
     return false
   }
+  if (!isCurrentPage(generation)) return false
   applyOverviewSnapshot(response?.data || {})
-  loadTodayLogStates()
+  await loadTodayLogStates(generation)
   return true
 }
 
@@ -565,6 +578,7 @@ async function handleClearStockAnalysis(row) {
 }
 
 async function handleDeleteAnalysisSession(row) {
+  const generation = pageGeneration
   if (!canDeleteSession(row.stock_code)) {
     return
   }
@@ -594,8 +608,9 @@ async function handleDeleteAnalysisSession(row) {
       streamMessages.value.push({ type: 'status', text: '⚠️ 分析 session 已删除' })
     }
 
-    await refreshAnalysisStatus(row.stock_code)
-    await refreshTodayLogState(row.stock_code)
+    await refreshAnalysisStatus(row.stock_code, generation)
+    await refreshTodayLogState(row.stock_code, generation)
+    if (!isCurrentPage(generation)) return
     ElMessage.success(`已删除 ${row.name} 的分析 session`)
   } catch (err) {
     ElMessage.error(`删除 session 失败: ${err.message || err}`)
@@ -647,6 +662,7 @@ async function refreshHistories(list = stocksList.value) {
 
 /** 打开交互式分析弹窗 */
 async function startAnalysis(row) {
+  const generation = pageGeneration
   if (analysisState[row.stock_code] === 'running') {
     dialogStock.stock_code = row.stock_code
     dialogStock.name = row.name
@@ -655,13 +671,14 @@ async function startAnalysis(row) {
     pendingQuestion.value = null
     userInput.value = ''
     dialogVisible.value = true
-    connectSSE(row.stock_code, row.name, false)
+    connectSSE(row.stock_code, row.name, false, generation)
     return
   }
 
   if (hasTodayReport(row.stock_code) && !(await confirmRegenerate(row.name))) {
     return
   }
+  if (!isCurrentPage(generation)) return
 
   // Set up dialog
   dialogStock.stock_code = row.stock_code
@@ -674,18 +691,23 @@ async function startAnalysis(row) {
 
   try {
     await startInteractiveAnalysisWithMode(row.stock_code, false)
-    connectSSE(row.stock_code, row.name, false)
-    await refreshTodayLogState(row.stock_code)
-    await refreshAnalysisStatus(row.stock_code)
+    if (!isCurrentPage(generation)) return
+    lastSSEEventId = 0
+    connectSSE(row.stock_code, row.name, false, generation)
+    await refreshTodayLogState(row.stock_code, generation)
+    if (!isCurrentPage(generation)) return
+    await refreshAnalysisStatus(row.stock_code, generation)
   } catch (err) {
+    if (!isCurrentPage(generation)) return
     ElMessage.error(`启动分析失败: ${err.message || err}`)
     isAnalyzing.value = false
-    await refreshAnalysisStatus(row.stock_code)
+    await refreshAnalysisStatus(row.stock_code, generation)
   }
 }
 
 /** 一键快速分析（自动使用所有默认值，不弹交互窗口） */
 async function startQuickAnalysis(row) {
+  const generation = pageGeneration
   if (analysisState[row.stock_code] === 'running') {
     ElMessage.warning('分析正在进行中…')
     return
@@ -694,17 +716,22 @@ async function startQuickAnalysis(row) {
   if (hasTodayReport(row.stock_code) && !(await confirmRegenerate(row.name))) {
     return
   }
+  if (!isCurrentPage(generation)) return
 
   ElMessage.info(`⚡ 一键分析 ${row.name}，全程自动…`)
 
   try {
     await startInteractiveAnalysisWithMode(row.stock_code, true)
-    connectSSE(row.stock_code, row.name, true)
-    await refreshTodayLogState(row.stock_code)
-    await refreshAnalysisStatus(row.stock_code)
+    if (!isCurrentPage(generation)) return
+    lastSSEEventId = 0
+    connectSSE(row.stock_code, row.name, true, generation)
+    await refreshTodayLogState(row.stock_code, generation)
+    if (!isCurrentPage(generation)) return
+    await refreshAnalysisStatus(row.stock_code, generation)
   } catch (err) {
+    if (!isCurrentPage(generation)) return
     ElMessage.error(`启动分析失败: ${err.message || err}`)
-    await refreshAnalysisStatus(row.stock_code)
+    await refreshAnalysisStatus(row.stock_code, generation)
   }
 }
 
@@ -730,6 +757,14 @@ let sseReconnectAttempts = 0
 let sseReconnectTimer = null
 let sseHeartbeatTimer = null
 let lastSSEMessageTime = 0
+let sseReconnectNoticeShown = false
+
+function appendStreamMessage(message) {
+  streamMessages.value.push(message)
+  if (streamMessages.value.length > 256) {
+    streamMessages.value.splice(0, streamMessages.value.length - 256)
+  }
+}
 
 // ── Bulk parallel run state ────────────────────────────────────────────────
 let bulkRunning = false
@@ -744,23 +779,28 @@ function closeAllBulkSSE() {
   bulkSessions.clear()
 }
 
-function connectSSE(code, name, autoRespond = false) {
+function connectSSE(code, name, autoRespond = false, generation = pageGeneration) {
+  if (!isCurrentPage(generation)) return
   closeSSE()
-
-  eventSource = new EventSource(`/api/analyze/${code}/stream`)
+  const connection = ++sseConnectionGeneration
+  const stream = new EventSource(`/api/analyze/${code}/stream${lastSSEEventId > 0 ? `?after_event_id=${encodeURIComponent(lastSSEEventId)}` : ''}`)
+  eventSource = stream
   lastSSEMessageTime = Date.now()
+  const isCurrentStream = () => isCurrentPage(generation) && connection === sseConnectionGeneration && eventSource === stream
 
   // 心跳监控：30秒无消息则认为连接异常
   sseHeartbeatTimer = setInterval(() => {
-    if (Date.now() - lastSSEMessageTime > 30000 && eventSource?.readyState === EventSource.OPEN) {
+    if (isCurrentStream() && Date.now() - lastSSEMessageTime > 30000 && stream.readyState === EventSource.OPEN) {
       console.warn('SSE heartbeat timeout, reconnecting...')
-      reconnectSSE(code, name, autoRespond)
+      reconnectSSE(code, name, autoRespond, generation)
     }
   }, 10000)
 
-  eventSource.onmessage = async (e) => {
+  stream.onmessage = async (e) => {
+    if (!isCurrentStream()) return
     lastSSEMessageTime = Date.now()
     sseReconnectAttempts = 0
+    sseReconnectNoticeShown = false
 
     if (e.data === ':ping') return
 
@@ -768,6 +808,12 @@ function connectSSE(code, name, autoRespond = false) {
     try {
       event = JSON.parse(e.data)
     } catch { return }
+    if (!isCurrentStream()) return
+    const eventId = Number(event.event_id || e.lastEventId || 0)
+    if (Number.isFinite(eventId) && eventId > 0) {
+      if (eventId <= lastSSEEventId) return
+      lastSSEEventId = eventId
+    }
 
     switch (event.type) {
       case 'status':
@@ -775,7 +821,7 @@ function connectSSE(code, name, autoRespond = false) {
       case 'output':
       case 'error':
         if (!autoRespond) {
-          streamMessages.value.push({ type: event.type, text: event.text, action: event.action })
+          appendStreamMessage({ type: event.type, text: event.text, action: event.action })
           scrollOutput()
         }
         break
@@ -792,7 +838,7 @@ function connectSSE(code, name, autoRespond = false) {
           timeoutSeconds: event.timeout_seconds || 30,
         }
         userInput.value = ''
-        streamMessages.value.push({
+        appendStreamMessage({
           type: 'status',
           text: `❓ ${pendingQuestion.value.question}${pendingQuestion.value.default ? ` (默认: ${pendingQuestion.value.default})` : ''}`,
         })
@@ -802,7 +848,7 @@ function connectSSE(code, name, autoRespond = false) {
 
       case 'user-response':
         if (!autoRespond) {
-          streamMessages.value.push({
+          appendStreamMessage({
             type: 'user-response',
             text: event.auto ? `${event.text}${event.text?.includes('自动') ? '' : ' (自动)'}` : event.text,
           })
@@ -812,20 +858,22 @@ function connectSSE(code, name, autoRespond = false) {
         break
 
       case 'session_end':
+        if (!isCurrentStream()) return
+        await refreshAnalysisStatus(code, generation)
+        await refreshTodayReportState(code, generation)
+        await refreshTodayLogState(code, generation)
+        if (!isCurrentStream()) return
         closeSSE()
         isAnalyzing.value = false
         pendingQuestion.value = null
         userInput.value = ''
-        await refreshAnalysisStatus(code)
-        await refreshTodayReportState(code)
-        await refreshTodayLogState(code)
         if (!autoRespond) {
           const statusText = event.status === 'done'
             ? '✅ 分析完成！'
             : event.status === 'cancelled'
               ? '⚠️ 分析已取消'
               : `❌ 分析失败${event.text ? `: ${event.text}` : ''}`
-          streamMessages.value.push({ type: event.status === 'error' ? 'error' : 'status', text: statusText })
+          appendStreamMessage({ type: event.status === 'error' ? 'error' : 'status', text: statusText })
           scrollOutput()
         } else if (event.status === 'done') {
           ElMessage.success(`${name} 一键分析完成`)
@@ -838,46 +886,30 @@ function connectSSE(code, name, autoRespond = false) {
     }
   }
 
-  eventSource.onerror = () => {
-    if (analysisState[code] === 'running') {
-      reconnectSSE(code, name, autoRespond)
-    } else {
-      closeSSE()
-      isAnalyzing.value = false
-    }
+  stream.onerror = () => {
+    if (!isCurrentStream()) return
+    reconnectSSE(code, name, autoRespond, generation)
   }
 }
 
-function reconnectSSE(code, name, autoRespond) {
+function reconnectSSE(code, name, autoRespond, generation = pageGeneration) {
+  if (!isCurrentPage(generation)) return
   closeSSE()
-
-  if (sseReconnectAttempts >= 5) {
-    isAnalyzing.value = false
-    refreshAnalysisStatus(code)
-    if (!autoRespond) {
-      streamMessages.value.push({ type: 'error', text: '连接多次失败，请重试' })
-    } else {
-      ElMessage.error(`${name} 分析中断`)
-    }
-    return
-  }
-
-  const delay = Math.min(1000 * Math.pow(2, sseReconnectAttempts), 10000)
+  const delay = Math.min(1000 * Math.pow(2, sseReconnectAttempts), 30000)
   sseReconnectAttempts++
-
-  if (!autoRespond) {
-    streamMessages.value.push({ type: 'status', text: `连接断开，${delay / 1000}秒后重连 (${sseReconnectAttempts}/5)...` })
+  if (!autoRespond && !sseReconnectNoticeShown) {
+    sseReconnectNoticeShown = true
+    appendStreamMessage({ type: 'status', text: '连接中断，后台继续分析，正在重连…' })
     scrollOutput()
   }
 
   sseReconnectTimer = setTimeout(() => {
-    if (analysisState[code] === 'running') {
-      connectSSE(code, name, autoRespond)
-    }
+    if (isCurrentPage(generation)) connectSSE(code, name, autoRespond, generation)
   }, delay)
 }
 
 function closeSSE() {
+  sseConnectionGeneration++
   if (sseHeartbeatTimer) {
     clearInterval(sseHeartbeatTimer)
     sseHeartbeatTimer = null
@@ -886,7 +918,13 @@ function closeSSE() {
     clearTimeout(sseReconnectTimer)
     sseReconnectTimer = null
   }
-  eventSource = closeAnalysisEventSource(eventSource)
+  const stream = eventSource
+  eventSource = null
+  if (stream) {
+    stream.onmessage = null
+    stream.onerror = null
+  }
+  closeAnalysisEventSource(stream)
 }
 
 /** Send typed response */
@@ -918,13 +956,14 @@ async function quickReply(text) {
 
 /** Cancel current session */
 async function cancelAnalysisSession() {
-  await cancelAnalysis(dialogStock.stock_code)
-  closeSSE()
-  isAnalyzing.value = false
+  const generation = pageGeneration
+  const code = dialogStock.stock_code
+  await cancelAnalysis(code)
+  if (!isCurrentPage(generation)) return
   pendingQuestion.value = null
   userInput.value = ''
-  await refreshAnalysisStatus(dialogStock.stock_code)
-  streamMessages.value.push({ type: 'status', text: '⚠️ 分析已取消' })
+  appendStreamMessage({ type: 'status', text: '取消请求已发送，等待后台确认' })
+  connectSSE(code, dialogStock.name, false, generation)
 }
 
 /** Simple Markdown → HTML (safe subset) */
@@ -949,7 +988,8 @@ function scrollOutput() {
 
 function startStatusPoll() {
   if (statusPollTimer) return
-  statusPollTimer = setInterval(pollStatusesOnce, STATUS_POLL_INTERVAL)
+  const generation = pageGeneration
+  statusPollTimer = setInterval(() => pollStatusesOnce(generation), STATUS_POLL_INTERVAL)
 }
 
 function stopStatusPoll() {
@@ -959,14 +999,16 @@ function stopStatusPoll() {
   }
 }
 
-async function pollStatusesOnce() {
-  await Promise.allSettled(stocksList.value.map((stock) => refreshAnalysisStatus(stock.stock_code)))
+async function pollStatusesOnce(generation = pageGeneration) {
+  await Promise.allSettled(stocksList.value.map((stock) => refreshAnalysisStatus(stock.stock_code, generation)))
+  if (!isCurrentPage(generation)) return
   lastSyncedAt.value = Date.now()
 }
 
-async function refreshAnalysisStatus(code) {
+async function refreshAnalysisStatus(code, generation = pageGeneration) {
   try {
     const { data } = await getAnalysisStatus(code)
+    if (!isCurrentPage(generation)) return
     setAnalysisStatus(code, data.status || 'idle')
   } catch {
     // ignore transient errors; next tick will retry
@@ -991,15 +1033,16 @@ async function analyzeAll() {
   }
 
   bulkRunning = true
+  const generation = pageGeneration
   const total = analyzableStocks.length
   ElMessage.info(`⚡ 全部分析已启动，共 ${total} 只股票并行执行…`)
   try {
     const results = await Promise.all(
-      analyzableStocks.map((stock) => runBulkAnalysis(stock.stock_code, stock.name)),
+      analyzableStocks.map((stock) => runBulkAnalysis(stock.stock_code, stock.name, generation)),
     )
     const doneCount = results.filter((s) => s === 'done').length
     const failCount = total - doneCount
-    ElMessage.success(`全部分析完成：成功 ${doneCount} 只${failCount ? `，失败 ${failCount} 只` : ''}`)
+    if (isCurrentPage(generation)) ElMessage.success(`全部分析完成：成功 ${doneCount} 只${failCount ? `，失败 ${failCount} 只` : ''}`)
   } finally {
     bulkRunning = false
     closeAllBulkSSE()
@@ -1029,48 +1072,63 @@ async function handleAnalyzeAll() {
  * stocks can stream in parallel without clobbering the shared eventSource.
  * Resolves with the final status ('done' | 'error' | 'cancelled').
  */
-function runBulkAnalysis(code, name) {
+function runBulkAnalysis(code, name, generation = pageGeneration) {
   return new Promise(async (resolve) => {
+    if (!isCurrentPage(generation)) { resolve('detached'); return }
     try {
       await startInteractiveAnalysisWithMode(code, true)
-      await refreshTodayLogState(code)
-      await refreshAnalysisStatus(code)
+      await refreshTodayLogState(code, generation)
+      await refreshAnalysisStatus(code, generation)
     } catch (err) {
+      if (!isCurrentPage(generation)) { resolve('detached'); return }
       ElMessage.error(`启动分析失败 ${name}: ${err.message || err}`)
-      await refreshAnalysisStatus(code)
+      await refreshAnalysisStatus(code, generation)
       resolve('error')
       return
     }
-    connectBulkSSE(code, name, resolve)
+    if (!isCurrentPage(generation)) { resolve('detached'); return }
+    connectBulkSSE(code, name, resolve, generation)
   })
 }
 
 /** Isolated SSE connection for parallel bulk runs (auto-respond only). */
-function connectBulkSSE(code, name, onEnd) {
+function connectBulkSSE(code, name, onEnd, generation = pageGeneration) {
   let attempts = 0
   let es = null
   let heartbeatTimer = null
   let reconnectTimer = null
   let lastMessageTime = Date.now()
+  let lastEventId = 0
   let settled = false
   let logActivated = false
 
-  const teardown = () => {
+  const dispose = () => {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    if (es) { es.onmessage = null; es.onerror = null }
     es = closeAnalysisEventSource(es)
     bulkSessions.delete(code)
+  }
+
+  const teardown = () => {
+    if (settled) return
+    settled = true
+    dispose()
+    onEnd('detached')
   }
 
   const finish = (status) => {
     if (settled) return
     settled = true
-    teardown()
+    dispose()
     onEnd(status)
   }
 
   const open = () => {
-    es = new EventSource(`/api/analyze/${code}/stream`)
+    if (!isCurrentPage(generation) || settled) return
+    const query = lastEventId > 0 ? `?after_event_id=${encodeURIComponent(lastEventId)}` : ''
+    const stream = new EventSource(`/api/analyze/${code}/stream${query}`)
+    es = stream
     lastMessageTime = Date.now()
 
     heartbeatTimer = setInterval(() => {
@@ -1079,7 +1137,8 @@ function connectBulkSSE(code, name, onEnd) {
       }
     }, 10000)
 
-    es.onmessage = async (e) => {
+    stream.onmessage = async (e) => {
+      if (!isCurrentPage(generation) || settled || es !== stream) return
       lastMessageTime = Date.now()
       attempts = 0
       if (e.data === ':ping') return
@@ -1088,60 +1147,54 @@ function connectBulkSSE(code, name, onEnd) {
       // the session is live — flip the "📝 实时日志" button on for this stock.
       if (!logActivated) {
         logActivated = true
-        refreshTodayLogState(code)
+        refreshTodayLogState(code, generation)
       }
 
       let event
       try {
         event = JSON.parse(e.data)
       } catch { return }
+      const eventId = Number(event.event_id || e.lastEventId || 0)
+      if (Number.isFinite(eventId) && eventId > 0) {
+        if (eventId <= lastEventId) return
+        lastEventId = eventId
+      }
 
       if (event.type !== 'session_end') return
 
+      await refreshAnalysisStatus(code, generation)
       if (event.status === 'done') {
-        await refreshAnalysisStatus(code)
-        await refreshTodayReportState(code)
-        await refreshTodayLogState(code)
+        await refreshTodayReportState(code, generation)
+        await refreshTodayLogState(code, generation)
+      }
+      if (!isCurrentPage(generation) || settled || es !== stream) return
+      if (event.status === 'done') {
         ElMessage.success(`${name} 一键分析完成`)
       } else if (event.status === 'cancelled') {
-        await refreshAnalysisStatus(code)
         ElMessage.info(`${name} 分析已取消`)
       } else {
-        await refreshAnalysisStatus(code)
         ElMessage.error(`${name} 分析失败${event.text ? `: ${event.text}` : ''}`)
       }
       finish(event.status)
     }
 
-    es.onerror = () => {
-      if (analysisState[code] === 'running') {
-        reconnect()
-      } else {
-        finish('error')
-      }
+    stream.onerror = () => {
+      if (isCurrentPage(generation) && !settled && es === stream) reconnect()
     }
   }
 
   const reconnect = () => {
+    if (!isCurrentPage(generation) || settled) return
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    if (es) { es.onmessage = null; es.onerror = null }
     es = closeAnalysisEventSource(es)
 
-    if (attempts >= 5) {
-      refreshAnalysisStatus(code)
-      ElMessage.error(`${name} 分析中断`)
-      finish('error')
-      return
-    }
-
-    const delay = Math.min(1000 * Math.pow(2, attempts), 10000)
+    const delay = Math.min(1000 * Math.pow(2, attempts), 30000)
     attempts++
     reconnectTimer = setTimeout(() => {
-      if (analysisState[code] === 'running') {
-        open()
-      } else {
-        finish('error')
-      }
+      reconnectTimer = null
+      if (isCurrentPage(generation) && !settled) open()
     }, delay)
   }
 
@@ -1193,12 +1246,13 @@ function showCompletedState(code) {
   return analysisState[code] === 'done' || hasTodayMarkdownResult(code)
 }
 
-async function refreshTodayReportStates() {
+async function refreshTodayReportStates(generation = pageGeneration) {
   const validCodes = new Set(stocksList.value.map((s) => s.stock_code))
   const settled = await Promise.allSettled(stocksList.value.map(async (stock) => {
     const report = await fetchTodayReport(stock.stock_code)
     return [stock.stock_code, report]
   }))
+  if (!isCurrentPage(generation)) return
   for (const code of Object.keys(todayReportMap)) {
     if (!validCodes.has(code)) setTodayReport(code, null)
   }
@@ -1209,8 +1263,9 @@ async function refreshTodayReportStates() {
   }
 }
 
-async function refreshTodayReportState(code) {
+async function refreshTodayReportState(code, generation = pageGeneration) {
   const report = await fetchTodayReport(code)
+  if (!isCurrentPage(generation)) return
   setTodayReport(code, report)
 }
 
@@ -1294,9 +1349,10 @@ function downloadLog() {
   }
 }
 
-async function refreshTodayLogState(code) {
+async function refreshTodayLogState(code, generation = pageGeneration) {
   try {
     const { data } = await getTodayLog(code)
+    if (!isCurrentPage(generation)) return
     if (data?.exists) {
       setTodayLog(code, data)
     } else {
@@ -1307,8 +1363,8 @@ async function refreshTodayLogState(code) {
   }
 }
 
-async function loadTodayLogStates() {
-  await Promise.allSettled(stocksList.value.map((s) => refreshTodayLogState(s.stock_code)))
+async function loadTodayLogStates(generation = pageGeneration) {
+  await Promise.allSettled(stocksList.value.map((s) => refreshTodayLogState(s.stock_code, generation)))
 }
 
 function questionKindLabel(kind) {
@@ -1412,7 +1468,7 @@ function resetStockPageState() {
   --stocks-table-header-height: 44px;
   --stocks-history-chart-height: calc(var(--stocks-row-height) - 8px);
   display: grid;
-  grid-template-columns: 2.5fr 1fr;
+  grid-template-columns: 6fr 1fr;
   gap: 20px;
   width: 100%;
   margin-bottom: 24px;

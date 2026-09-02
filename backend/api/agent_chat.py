@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -15,16 +16,17 @@ from db.models import Portfolio, StockReport
 from core.agent_runtime import (
     apply_llm_env_from_settings,
     build_holding_background,
-    drop_executor,
     end_stream_session,
     get_or_create_executor,
     get_stream_session,
+    is_runtime_accepting,
     list_skills,
+    release_executor,
     start_stream_session,
 )
 
 router = APIRouter(tags=["agent-chat"])
-_active_stream_consumers: set[str] = set()
+_active_stream_consumers: dict[str, object] = {}
 _active_stream_consumers_lock = threading.Lock()
 
 
@@ -100,17 +102,20 @@ def _build_start_context(db: Session, stock_code: str, skill: str) -> dict:
     }
 
 
-def _acquire_stream_consumer(session_id: str) -> bool:
+def _acquire_stream_consumer(session_id: str) -> Optional[object]:
     with _active_stream_consumers_lock:
         if session_id in _active_stream_consumers:
-            return False
-        _active_stream_consumers.add(session_id)
-        return True
+            return None
+        token = object()
+        _active_stream_consumers[session_id] = token
+        return token
 
 
-def _release_stream_consumer(session_id: str) -> None:
+def _release_stream_consumer(session_id: str, token: Optional[object] = None) -> None:
     with _active_stream_consumers_lock:
-        _active_stream_consumers.discard(session_id)
+        current = _active_stream_consumers.get(session_id)
+        if current is not None and (token is None or current is token):
+            _active_stream_consumers.pop(session_id, None)
 
 
 @router.get("/agent/skills")
@@ -120,6 +125,8 @@ def get_skills():
 
 @router.post("/agent/chat/start")
 def start_chat(body: StartIn, db: Session = Depends(get_db)):
+    if not is_runtime_accepting():
+        return {"error": "服务正在关闭，请稍后重试"}
     cfg_err = _ensure_llm_configured(db)
     if cfg_err:
         return {"error": cfg_err}
@@ -149,30 +156,30 @@ def start_chat(body: StartIn, db: Session = Depends(get_db)):
         total_portfolio_cost=round(total_cost, 2),
     )
 
-    sid = _session_id(body.stock_code, body.skill)
-    executor = get_or_create_executor(sid, body.skill)
+    operation_run_id = None
     try:
+        sid = _session_id(body.stock_code, body.skill)
+        operation_run_id = f"sync-{uuid.uuid4().hex}"
+        executor = get_or_create_executor(sid, body.skill, run_id=operation_run_id)
         result = executor.chat(
             message=background,
             session_id=sid,
             context={"stock_code": body.stock_code},
         )
     except Exception as exc:
-        drop_executor(sid)
         return {"error": f"agent 启动失败: {exc}"}
-
+    finally:
+        if "sid" in locals() and operation_run_id is not None:
+            release_executor(sid, run_id=operation_run_id)
     if not getattr(result, "success", False):
-        drop_executor(sid)
         return {"error": getattr(result, "error", None) or "agent 启动失败"}
-    return {
-        "session_id": sid,
-        "background": background,
-        "reply": result.content,
-    }
+    return {"session_id": sid, "background": background, "reply": result.content}
 
 
 @router.post("/agent/chat/start-stream")
 def start_chat_stream(body: StartIn, db: Session = Depends(get_db)):
+    if not is_runtime_accepting():
+        return {"error": "服务正在关闭，请稍后重试"}
     cfg_err = _ensure_llm_configured(db)
     if cfg_err:
         return {"error": cfg_err}
@@ -192,12 +199,19 @@ def start_chat_stream(body: StartIn, db: Session = Depends(get_db)):
 
 @router.post("/agent/chat/message")
 def send_message(body: MessageIn, db: Session = Depends(get_db)):
+    if not is_runtime_accepting():
+        return {"error": "服务正在关闭，请稍后重试"}
     cfg_err = _ensure_llm_configured(db)
     if cfg_err:
         return {"error": cfg_err}
 
-    executor = get_or_create_executor(body.session_id, body.skill)
     try:
+        operation_run_id = f"sync-{uuid.uuid4().hex}"
+        executor = get_or_create_executor(
+            body.session_id,
+            body.skill,
+            run_id=operation_run_id,
+        )
         result = executor.chat(
             message=body.message,
             session_id=body.session_id,
@@ -205,17 +219,21 @@ def send_message(body: MessageIn, db: Session = Depends(get_db)):
         )
     except Exception as exc:
         return {"error": f"agent 调用失败: {exc}"}
-
+    finally:
+        if "operation_run_id" in locals():
+            release_executor(body.session_id, run_id=operation_run_id)
     if not getattr(result, "success", False):
         return {"error": getattr(result, "error", None) or "agent 调用失败"}
     return {"reply": result.content}
 
 
 @router.get("/agent/chat/{session_id}/stream")
-async def stream_chat(session_id: str):
-    session = get_stream_session(session_id)
-
+async def stream_chat(
+    session_id: str,
+    after_event_id: Optional[int] = Query(default=None, ge=0),
+):
     async def event_generator():
+        session = get_stream_session(session_id)
         if session is None:
             payload = json.dumps(
                 {
@@ -228,7 +246,8 @@ async def stream_chat(session_id: str):
             yield f"data: {payload}\n\n"
             return
 
-        if not _acquire_stream_consumer(session_id):
+        consumer_token = _acquire_stream_consumer(session_id)
+        if consumer_token is None:
             payload = json.dumps(
                 {
                     "type": "diagnostic",
@@ -240,23 +259,46 @@ async def stream_chat(session_id: str):
             yield f"data: {payload}\n\n"
             return
 
+        if get_stream_session(session_id) is not session:
+            _release_stream_consumer(session_id, consumer_token)
+            payload = json.dumps(
+                {
+                    "type": "diagnostic",
+                    "code": "session_replaced",
+                    "text": "会话已切换，请重新连接当前分析",
+                },
+                ensure_ascii=False,
+            )
+            yield f"data: {payload}\n\n"
+            return
+
+        loop = None
+        generation = None
         try:
-            session.attach_loop(asyncio.get_running_loop())
-            for event in session.snapshot_events():
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            loop = asyncio.get_running_loop()
+            replay = session.attach_loop(loop, after_event_id)
+            generation = session.connection_generation
+            for event in replay:
+                event_id = event.get("event_id", "")
+                prefix = f"id: {event_id}\n" if event_id else ""
+                yield f"{prefix}data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
             while True:
-                event = await session.get_event()
+                event = await session.get_event(generation=generation)
                 if event is None:
                     break
                 if event.get("type") == "heartbeat":
                     yield ":ping\n\n"
                     continue
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                event_id = event.get("event_id", "")
+                prefix = f"id: {event_id}\n" if event_id else ""
+                yield f"{prefix}data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event.get("type") == "session_end":
                     break
         finally:
-            _release_stream_consumer(session_id)
+            if generation is not None:
+                session.detach_loop_for_generation(generation)
+            _release_stream_consumer(session_id, consumer_token)
 
     return StreamingResponse(
         event_generator(),
@@ -272,5 +314,4 @@ async def stream_chat(session_id: str):
 @router.delete("/agent/chat/{session_id}")
 def end_chat(session_id: str):
     end_stream_session(session_id)
-    drop_executor(session_id)
     return {"ok": True}

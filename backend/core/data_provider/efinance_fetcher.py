@@ -24,6 +24,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
@@ -50,6 +51,81 @@ except (ValueError, TypeError):
         "EFINANCE_CALL_TIMEOUT is not a valid integer, using default 30s"
     )
     _EF_CALL_TIMEOUT = 30
+
+try:
+    _EFINANCE_TIMEOUT_WORKER_LIMIT = max(1, int(os.environ.get("EFINANCE_TIMEOUT_WORKER_LIMIT", "8")))
+except (ValueError, TypeError):
+    _EFINANCE_TIMEOUT_WORKER_LIMIT = 8
+
+_timeout_worker_lock = threading.Lock()
+_timeout_workers: dict[int, dict[str, Any]] = {}
+_timeout_worker_sequence = 0
+
+
+class EfinanceTimeoutWorkerLimitError(RuntimeError):
+    """Raised when the process-wide efinance timeout worker cap is full."""
+
+
+def get_timeout_worker_count() -> int:
+    """Return the number of underlying timeout workers still running."""
+    with _timeout_worker_lock:
+        return len(_timeout_workers)
+
+
+def get_timeout_worker_registry() -> list[dict[str, Any]]:
+    """Return a read-only diagnostic snapshot of timeout workers."""
+    now = time.monotonic()
+    with _timeout_worker_lock:
+        return [
+            {
+                "worker_id": worker_id,
+                "started_at": entry["started_at"],
+                "age_seconds": max(0.0, now - entry["started_at"]),
+                "future_done": bool(entry.get("future") and entry["future"].done()),
+            }
+            for worker_id, entry in _timeout_workers.items()
+        ]
+
+
+def wait_for_timeout_workers(deadline: float) -> bool:
+    """Wait for actual underlying workers to finish, without fabricating cancellation."""
+    while True:
+        if get_timeout_worker_count() == 0:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+
+
+def _release_timeout_worker(worker_id: int) -> None:
+    with _timeout_worker_lock:
+        _timeout_workers.pop(worker_id, None)
+
+
+def _reserve_timeout_worker(executor: ThreadPoolExecutor) -> int:
+    global _timeout_worker_sequence
+    with _timeout_worker_lock:
+        if len(_timeout_workers) >= _EFINANCE_TIMEOUT_WORKER_LIMIT:
+            raise EfinanceTimeoutWorkerLimitError(
+                "efinance timeout worker pool exhausted"
+            )
+        _timeout_worker_sequence += 1
+        worker_id = _timeout_worker_sequence
+        _timeout_workers[worker_id] = {
+            "executor": executor,
+            "future": None,
+            "started_at": time.monotonic(),
+        }
+        return worker_id
+
+
+def _set_timeout_worker_future(worker_id: int, future) -> None:
+    with _timeout_worker_lock:
+        entry = _timeout_workers.get(worker_id)
+        if entry is not None:
+            entry["future"] = future
+
 
 from src.patches.eastmoney_patch import eastmoney_patch
 from src.config import get_config
@@ -179,13 +255,31 @@ def _ef_call_with_timeout(func, *args, timeout=None, **kwargs):
         timeout = _EF_CALL_TIMEOUT
     # Do NOT use 'with ThreadPoolExecutor(...)' here: the context manager calls
     # shutdown(wait=True) on __exit__, which would re-block on the hung thread.
-    executor = ThreadPoolExecutor(max_workers=1)
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="efinance-timeout")
+    worker_id = None
     try:
+        worker_id = _reserve_timeout_worker(executor)
         future = executor.submit(func, *args, **kwargs)
+        _set_timeout_worker_future(worker_id, future)
+        future.add_done_callback(lambda _future: _release_timeout_worker(worker_id))
         return future.result(timeout=timeout)
+    except EfinanceTimeoutWorkerLimitError:
+        logger.warning("efinance timeout worker pool exhausted; using existing fallback path")
+        raise
+    except FuturesTimeoutError:
+        # A timeout only ends the caller's wait. The registry remains occupied
+        # until the underlying future really exits. Preserve the existing
+        # exception type so callers keep their current fallback classification.
+        raise
     finally:
         # wait=False: calling thread returns immediately; worker cleans up later
         executor.shutdown(wait=False)
+        if worker_id is not None:
+            with _timeout_worker_lock:
+                entry = _timeout_workers.get(worker_id)
+                future = entry.get("future") if entry else None
+            if future is None:
+                _release_timeout_worker(worker_id)
 
 
 def _classify_eastmoney_error(exc: Exception) -> Tuple[str, str]:

@@ -56,22 +56,22 @@ export const resolveStock = (field, q) =>
 export const getNotifications = () => api.get('/dashboard/notifications')
 export const clearNotifications = () => api.post('/dashboard/notifications/clear')
 
-export const startInteractiveAnalysisWithMode = (code, auto_respond = false) =>
-  api.post(`/analyze/${code}/interactive`, { auto_respond })
+export const startInteractiveAnalysisWithMode = (code, auto_respond = false, options = {}) =>
+  api.post(`/analyze/${code}/interactive`, { auto_respond }, options)
 
-export const respondToAnalysis = (code, response) =>
-  api.post(`/analyze/${code}/respond`, { response })
+export const respondToAnalysis = (code, response, options = {}) =>
+  api.post(`/analyze/${code}/respond`, { response }, options)
 
-export const cancelAnalysis = (code) => api.delete(`/analyze/${code}/session`)
+export const cancelAnalysis = (code, options = {}) => api.delete(`/analyze/${code}/session`, options)
 
-export const getAgentSkills = () => api.get('/agent/skills')
+export const getAgentSkills = (options = {}) => api.get('/agent/skills', options)
 export const startAgentChat = (stock_code, skill) =>
   api.post('/agent/chat/start', { stock_code, skill }, { timeout: 180000 })
-export const startAgentChatStream = (stock_code, skill) =>
-  api.post('/agent/chat/start-stream', { stock_code, skill }, { timeout: 30000 })
-export const sendAgentMessage = (session_id, skill, message) =>
-  api.post('/agent/chat/message', { session_id, skill, message }, { timeout: 180000 })
-export const cancelAgentStream = (session_id) =>
-  api.delete(`/agent/chat/${encodeURIComponent(session_id)}`)
+export const startAgentChatStream = (stock_code, skill, options = {}) =>
+  api.post('/agent/chat/start-stream', { stock_code, skill }, { timeout: 30000, ...options })
+export const sendAgentMessage = (session_id, skill, message, options = {}) =>
+  api.post('/agent/chat/message', { session_id, skill, message }, { timeout: 180000, ...options })
+export const cancelAgentStream = (session_id, options = {}) =>
+  api.delete(`/agent/chat/${encodeURIComponent(session_id)}`, options)
 export const endAgentChat = (session_id) =>
   api.delete(`/agent/chat/${encodeURIComponent(session_id)}`)

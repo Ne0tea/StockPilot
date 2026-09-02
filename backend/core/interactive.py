@@ -3,8 +3,11 @@
 import asyncio
 import json
 import threading
+from collections import deque
 from datetime import date
+from time import monotonic
 from typing import Optional
+from uuid import uuid4
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -30,6 +33,11 @@ QUESTION_TIMEOUT_SECONDS = 30.0
 MAX_HTML_RETRY_ATTEMPTS = 1
 MAX_COMPLETION_NUDGE_ATTEMPTS = 2
 ANALYSIS_DONE_SENTINEL = "__ANALYSIS_DONE__"
+MAX_INTERACTIVE_EVENTS = 256
+MAX_INTERACTIVE_EVENT_BYTES = 2 * 1024 * 1024
+MAX_INTERACTIVE_CRITICAL_EVENTS = 128
+INTERACTIVE_SESSION_TTL_SECONDS = 30 * 60
+MAX_RETAINED_INTERACTIVE_SESSIONS = 256
 
 LOGIN_QUESTION_OPTIONS = ["已登录", "继续分析", "跳过"]
 AFFIRMATIVE_RESPONSES = {"已登录", "继续分析", "登录了", "allow", "允许", "yes", "y"}
@@ -39,6 +47,217 @@ NEGATIVE_RESPONSES = {"跳过", "没登录", "未登录", "不想登录", "deny"
 # Active sessions: {code: InteractiveSession}
 _active_sessions: dict[str, "InteractiveSession"] = {}
 _sessions_lock = threading.Lock()
+_background_tasks: set[asyncio.Task] = set()
+_background_tasks_lock = threading.Lock()
+_accepting_lock = threading.Lock()
+_accepting_new_tasks = True
+_housekeeping_task: Optional[asyncio.Task] = None
+
+
+class _BoundedEventQueue:
+    """Event-loop-owned queue with bounded storage and progress coalescing."""
+
+    def __init__(self, maxsize: int = MAX_INTERACTIVE_EVENTS):
+        self.maxsize = maxsize
+        self._items: deque[tuple[dict, bool, Optional[tuple]]] = deque()
+        self._wake: Optional[asyncio.Event] = None
+
+    def bind(self) -> None:
+        if self._wake is None:
+            self._wake = asyncio.Event()
+
+    def clear(self) -> None:
+        self._items.clear()
+        if self._wake is not None:
+            self._wake.clear()
+
+    def qsize(self) -> int:
+        return len(self._items)
+
+    def _replace_key(self, key: Optional[tuple], event: dict, critical: bool) -> bool:
+        if key is None:
+            return False
+        for index, item in enumerate(self._items):
+            if item[2] == key:
+                items = list(self._items)
+                items[index] = (event, critical, key)
+                self._items = deque(items)
+                if self._wake is not None:
+                    self._wake.set()
+                return True
+        return False
+
+    def put_nowait(self, event: dict, *, critical: bool, key: Optional[tuple]) -> bool:
+        if self._replace_key(key, event, critical):
+            return True
+        if len(self._items) >= self.maxsize:
+            index = next((i for i, item in enumerate(self._items) if not item[1]), None)
+            if index is None:
+                if not critical:
+                    return False
+                index = next(
+                    (i for i, item in enumerate(self._items)
+                     if not _event_is_protected(item[0])),
+                    None,
+                )
+            if index is None:
+                return False
+            items = list(self._items)
+            items.pop(index)
+            self._items = deque(items)
+        self._items.append((event, critical, key))
+        if self._wake is not None:
+            self._wake.set()
+        return True
+
+    async def get(self) -> dict:
+        self.bind()
+        while not self._items:
+            assert self._wake is not None
+            await self._wake.wait()
+            if not self._items:
+                self._wake.clear()
+        event, _, _ = self._items.popleft()
+        if not self._items and self._wake is not None:
+            self._wake.clear()
+        return event
+
+
+def _track_task(task: asyncio.Task) -> asyncio.Task:
+    with _background_tasks_lock:
+        _background_tasks.add(task)
+
+    def _discard(done_task: asyncio.Task) -> None:
+        with _background_tasks_lock:
+            _background_tasks.discard(done_task)
+
+    task.add_done_callback(_discard)
+    return task
+
+
+def get_background_tasks() -> list[asyncio.Task]:
+    with _background_tasks_lock:
+        return list(_background_tasks)
+
+
+def set_accepting_new_tasks(accepting: bool) -> None:
+    global _accepting_new_tasks
+    with _accepting_lock:
+        _accepting_new_tasks = bool(accepting)
+    if not accepting:
+        _stop_housekeeping()
+
+
+def is_accepting_new_tasks() -> bool:
+    with _accepting_lock:
+        return _accepting_new_tasks
+
+
+def _ensure_housekeeping() -> None:
+    global _housekeeping_task
+    if not is_accepting_new_tasks():
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if _housekeeping_task is not None and not _housekeeping_task.done():
+        return
+    task = asyncio.create_task(_interactive_housekeeping_loop())
+    _housekeeping_task = _track_task(task)
+
+    def clear_task(done_task: asyncio.Task) -> None:
+        global _housekeeping_task
+        if _housekeeping_task is done_task:
+            _housekeeping_task = None
+
+    task.add_done_callback(clear_task)
+
+
+def _stop_housekeeping() -> None:
+    global _housekeeping_task
+    task = _housekeeping_task
+    _housekeeping_task = None
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _interactive_housekeeping_loop() -> None:
+    while True:
+        await asyncio.sleep(60.0)
+        with _sessions_lock:
+            _prune_sessions_locked()
+
+
+def _event_is_critical(event: dict) -> bool:
+    return event.get("type") in {
+        "prompt", "question", "user-response", "output",
+        "diagnostic", "final_result", "session_end", "error",
+    }
+
+
+def _event_is_protected(event: dict) -> bool:
+    return event.get("type") in {"final_result", "session_end"}
+
+
+def _event_key(event: dict) -> Optional[tuple]:
+    if event.get("type") not in {"progress", "status"}:
+        return None
+    return (event.get("type"), event.get("action"), event.get("stage"), event.get("tool"))
+
+
+def _event_size(event: dict) -> int:
+    try:
+        return len(json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fit_event_to_buffer(event: dict) -> dict:
+    """Keep a single event from exceeding the history byte budget."""
+    if _event_size(event) <= MAX_INTERACTIVE_EVENT_BYTES:
+        return event
+
+    fitted = dict(event)
+    for field in ("text", "details", "question"):
+        value = fitted.get(field)
+        if isinstance(value, str):
+            fitted[field] = value[: max(0, len(value) // 2)]
+            if _event_size(fitted) <= MAX_INTERACTIVE_EVENT_BYTES:
+                return fitted
+    return {
+        "type": fitted.get("type", "event"),
+        "event_id": fitted.get("event_id"),
+        "truncated": True,
+    }
+
+
+def _shrink_event_to_size(event: dict, target_size: int) -> dict:
+    if _event_size(event) <= target_size:
+        return event
+    for field in ("text", "details", "question"):
+        value = event.get(field)
+        if not isinstance(value, str):
+            continue
+        low, high = 0, len(value)
+        best = None
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = dict(event)
+            candidate[field] = value[:middle]
+            candidate["truncated"] = True
+            if _event_size(candidate) <= target_size:
+                best = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        if best is not None:
+            return best
+    return {
+        "type": event.get("type", "event"),
+        "event_id": event.get("event_id"),
+        "truncated": True,
+    }
 
 
 def acquire_analysis_start_slot() -> bool:
@@ -143,13 +362,26 @@ class InteractiveSession:
         self.auto_respond = auto_respond
         self.report_time, self.report_date = resolve_stock_report_terms(code)
         self.session_id = f"stock_{code}_{date.today().isoformat()}"
+        self.run_id = uuid4().hex
         self.output_buffer = ""
         self.report_markdown = ""
-        self._events: asyncio.Queue = asyncio.Queue()
+        self._events = _BoundedEventQueue()
+        self._event_history = deque()
+        self._event_history_bytes = 0
+        self._event_ordinary_count = 0
+        self._event_critical_count = 0
+        self._event_sequence = 0
+        self._event_lock = threading.Lock()
         self._done = asyncio.Event()
         self._running = True
+        self._settling = False
         self._cancel_requested = False
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._connection_generation = 0
+        self._queue_cursor = 0
+        self._start_generation = uuid4().hex
+        self._task: Optional[asyncio.Task] = None
+        self._results_task: Optional[asyncio.Task] = None
         self._pending_response: Optional[UserResponse] = None
         self._pending_question: Optional[dict] = None
         self.final_status = "running"
@@ -158,6 +390,9 @@ class InteractiveSession:
         self._analysis_done_seen = False
         self._completion_nudge_count = 0
         self._results_task_started = False
+        self._terminal_event_published = False
+        self._finished_at = 0.0
+        self._log_closed = False
         self._log_writer = SessionLogWriter(
             reports_root=ensure_reports_root(),
             code=code,
@@ -168,33 +403,204 @@ class InteractiveSession:
 
     @property
     def is_running(self) -> bool:
-        return self._running
+        task = self._task
+        return self._running or (task is not None and not task.done())
 
-    async def get_event(self) -> Optional[dict]:
+    @property
+    def is_settling(self) -> bool:
+        return self._settling
+
+    def set_task(self, task: asyncio.Task) -> None:
+        self._task = task
+
+    @property
+    def run_identity(self) -> tuple[str, str]:
+        return self.run_id, self._start_generation
+
+    @property
+    def event_buffer_size(self) -> int:
+        with self._event_lock:
+            return len(self._event_history)
+
+    @property
+    def event_buffer_bytes(self) -> int:
+        with self._event_lock:
+            return self._event_history_bytes
+
+    @property
+    def queue_size(self) -> int:
+        return self._events.qsize()
+
+    def _remove_history_at_locked(self, index: int) -> None:
+        records = list(self._event_history)
+        removed = records.pop(index)
+        self._event_history = deque(records)
+        self._event_history_bytes -= _event_size(removed)
+        if _event_is_critical(removed):
+            self._event_critical_count -= 1
+        else:
+            self._event_ordinary_count -= 1
+
+    def _record_event(self, event: dict) -> dict:
+        recorded = dict(event)
+        with self._event_lock:
+            self._event_sequence += 1
+            recorded["event_id"] = self._event_sequence
+            recorded = _fit_event_to_buffer(recorded)
+            key = _event_key(recorded)
+            if key is not None:
+                retained = deque()
+                for previous in self._event_history:
+                    if _event_key(previous) == key:
+                        self._event_history_bytes -= _event_size(previous)
+                        if _event_is_critical(previous):
+                            self._event_critical_count -= 1
+                        else:
+                            self._event_ordinary_count -= 1
+                    else:
+                        retained.append(previous)
+                self._event_history = retained
+            self._event_history.append(recorded)
+            self._event_history_bytes += _event_size(recorded)
+            if _event_is_critical(recorded):
+                self._event_critical_count += 1
+            else:
+                self._event_ordinary_count += 1
+            while (
+                self._event_ordinary_count > MAX_INTERACTIVE_EVENTS
+                or self._event_critical_count > MAX_INTERACTIVE_CRITICAL_EVENTS
+                or self._event_history_bytes > MAX_INTERACTIVE_EVENT_BYTES
+            ):
+                index = next(
+                    (i for i, candidate in enumerate(self._event_history)
+                     if not _event_is_critical(candidate)),
+                    None,
+                )
+                if index is None:
+                    index = next(
+                         (i for i, candidate in enumerate(self._event_history)
+                          if not _event_is_protected(candidate)),
+                        None,
+                    )
+                if index is None:
+                    index = 0
+                    candidate = self._event_history[index]
+                    target_size = max(64, MAX_INTERACTIVE_EVENT_BYTES - (
+                        self._event_history_bytes - _event_size(candidate)
+                    ))
+                    fitted = _shrink_event_to_size(candidate, target_size)
+                    if _event_size(fitted) < _event_size(candidate):
+                        records = list(self._event_history)
+                        records[index] = fitted
+                        self._event_history = deque(records)
+                        self._event_history_bytes += _event_size(fitted) - _event_size(candidate)
+                        continue
+                self._remove_history_at_locked(index)
+        return recorded
+
+    def _enqueue_event(self, event: dict) -> None:
+        self._events.put_nowait(
+            event,
+            critical=_event_is_critical(event),
+            key=_event_key(event),
+        )
+
+    def _enqueue_if_current(self, event: dict, generation: int) -> None:
+        with self._event_lock:
+            if generation != self._connection_generation or self._event_loop is None:
+                return
+            self._enqueue_event(event)
+
+    def attach_loop(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        after_event_id: Optional[int] = None,
+    ) -> list[dict]:
         try:
-            return await asyncio.wait_for(self._events.get(), timeout=15.0)
+            after = max(0, int(after_event_id or 0))
+        except (TypeError, ValueError):
+            after = 0
+        with self._event_lock:
+            self._event_loop = loop
+            self._connection_generation += 1
+            self._events.bind()
+            self._events.clear()
+            self._queue_cursor = self._event_sequence
+            return [
+                dict(event)
+                for event in self._event_history
+                if int(event.get("event_id", 0)) > after
+            ]
+
+    def detach_loop(self) -> None:
+        self.detach_loop_for_generation(None)
+
+    @property
+    def connection_generation(self) -> int:
+        with self._event_lock:
+            return self._connection_generation
+
+    def detach_loop_for_generation(self, generation: Optional[int]) -> None:
+        with self._event_lock:
+            if generation is not None and generation != self._connection_generation:
+                return
+            self._connection_generation += 1
+            self._event_loop = None
+            self._events.clear()
+            self._queue_cursor = self._event_sequence
+
+    def events_after(self, after_event_id: Optional[int]) -> list[dict]:
+        try:
+            after = max(0, int(after_event_id or 0))
+        except (TypeError, ValueError):
+            after = 0
+        with self._event_lock:
+            return [
+                dict(event) for event in self._event_history
+                if int(event.get("event_id", 0)) > after
+            ]
+
+    async def get_event(self, generation: Optional[int] = None) -> Optional[dict]:
+        if generation is not None and generation != self.connection_generation:
+            return None
+        try:
+            event = await asyncio.wait_for(self._events.get(), timeout=15.0)
+            if generation is not None and generation != self.connection_generation:
+                return None
+            return event
         except asyncio.TimeoutError:
+            if generation is not None and generation != self.connection_generation:
+                return None
             if self._done.is_set():
                 return None
             return {"type": "heartbeat"}
 
     def _put_event(self, event: dict):
+        if event.get("type") == "heartbeat":
+            return
+        event = self._record_event(event)
         self._log_writer.append(event)
-        async def _enqueue():
-            await self._events.put(event)
-
-        if self._event_loop and self._event_loop.is_running():
-            asyncio.run_coroutine_threadsafe(_enqueue(), self._event_loop)
+        with self._event_lock:
+            loop = self._event_loop
+            generation = self._connection_generation
+            event_id = int(event.get("event_id", 0))
+            should_queue = event_id > self._queue_cursor
+            if should_queue:
+                self._queue_cursor = event_id
+        if should_queue and loop and loop.is_running():
+            loop.call_soon_threadsafe(self._enqueue_if_current, event, generation)
             return
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(_enqueue())
+        # A disconnected client must not leave events accumulating in the
+        # live queue; retained history is the replay source on reconnect.
+        return
 
     async def start(self):
-        self._event_loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
+        with self._event_lock:
+            if self._event_loop is None:
+                self._event_loop = loop
+                self._connection_generation += 1
+            self._events.bind()
         self._log_writer.open(name=self._log_writer_name, auto_respond=self._log_writer_auto_respond)
         try:
             await self._run_conversation()
@@ -202,29 +608,64 @@ class InteractiveSession:
                 self.final_status = self._resolve_terminal_status()
                 if self.final_status == "error" and not self.final_message:
                     self.final_message = f"分析未收到完成信号 {ANALYSIS_DONE_SENTINEL}"
-                    mark_analysis_error(self.code, self.final_message)
+                    mark_analysis_error_for_session(self, self.final_message)
+        except asyncio.CancelledError:
+            self._cancel_requested = True
+            self.final_status = "cancelled"
+            self.final_message = "分析已取消"
         except Exception as exc:
-            self.final_status = "error"
-            self.final_message = str(exc)
-            mark_analysis_error(self.code, str(exc))
-            self._put_event({"type": "error", "text": str(exc)})
+            if not self._cancel_requested:
+                self.final_status = "error"
+                self.final_message = str(exc)
+                mark_analysis_error_for_session(self, str(exc))
+                self._put_event({"type": "error", "text": str(exc)})
+            else:
+                self.final_status = "cancelled"
+                self.final_message = "分析已取消"
         finally:
-            self._running = False
-            self._put_event(
-                {
-                    "type": "session_end",
-                    "status": self.final_status,
-                    "text": self.final_message,
-                }
-            )
             if self.final_status == "done" and not self._results_task_started:
                 self._results_task_started = True
-                asyncio.create_task(save_results(self, reset_generation=get_reset_generation()))
-            elif self.final_status == "cancelled":
-                mark_analysis_idle(self.code)
-            remove_session(self.code)
+                self._settling = True
+                result_task = _track_task(
+                    asyncio.create_task(
+                        save_results(self, reset_generation=get_reset_generation())
+                    )
+                )
+                self._results_task = result_task
+                results_saved = False
+                try:
+                    results_saved = await result_task
+                except asyncio.CancelledError:
+                    self.final_status = "cancelled"
+                    self.final_message = "分析已取消"
+                except Exception as exc:
+                    self.final_status = "error"
+                    self.final_message = str(exc)
+                    mark_analysis_error_for_session(self, self.final_message)
+                finally:
+                    self._settling = False
+                if self.final_status == "done" and not results_saved:
+                    self.final_status = "error"
+                    self.final_message = "报告保存失败"
+                    mark_analysis_error_for_session(self, self.final_message)
+            self._running = False
+            if not self._terminal_event_published:
+                self._terminal_event_published = True
+                self._put_event(
+                    {
+                        "type": "session_end",
+                        "status": self.final_status,
+                        "text": self.final_message,
+                    }
+                )
+            if self.final_status == "cancelled":
+                mark_analysis_idle_for_session(self)
+            self._finished_at = monotonic()
+            _retain_session(self)
             self._done.set()
-            self._log_writer.close(final_status=self.final_status)
+            if not self._log_closed:
+                self._log_closed = True
+                self._log_writer.close(final_status=self.final_status)
 
     async def _run_conversation(self):
         async def can_use_tool(tool_name: str, tool_input: dict, context: ToolPermissionContext):
@@ -347,7 +788,7 @@ class InteractiveSession:
 
         self.final_status = "error"
         self.final_message = f"分析未收到完成信号 {ANALYSIS_DONE_SENTINEL}"
-        mark_analysis_error(self.code, self.final_message)
+        mark_analysis_error_for_session(self, self.final_message)
         self._put_event({"type": "error", "text": self.final_message})
         self._running = False
         return ""
@@ -451,13 +892,16 @@ class InteractiveSession:
         pending.set(text)
         return True
 
-    def cancel(self):
+    def cancel(self) -> bool:
+        if self._terminal_event_published:
+            return False
         self._cancel_requested = True
         self.final_status = "cancelled"
         self.final_message = "分析已取消"
         self._running = False
         if self._pending_response is not None:
             self._pending_response.set("")
+        return True
 
     def _resolve_terminal_status(self) -> str:
         if self._cancel_requested:
@@ -468,25 +912,33 @@ class InteractiveSession:
 
 
 def start_session(code: str, name: str, auto_respond: bool = False) -> Optional["InteractiveSession"]:
+    _ensure_housekeeping()
     if not acquire_analysis_start_slot():
         return None
 
     session: Optional[InteractiveSession] = None
-    with _sessions_lock:
-        try:
-            if is_reset_in_progress():
+    try:
+        with _accepting_lock:
+            if not _accepting_new_tasks:
                 return None
-            existing = _active_sessions.get(code)
-            if existing and existing.is_running:
-                return None
-            session = InteractiveSession(code, name, auto_respond=auto_respond)
-            _active_sessions[code] = session
-        finally:
-            release_analysis_start_slot()
+            with _sessions_lock:
+                _prune_sessions_locked()
+                if is_reset_in_progress():
+                    return None
+                existing = _active_sessions.get(code)
+                if existing and not existing._cancel_requested and (
+                    existing.is_running or existing.is_settling
+                ):
+                    return None
+                session = InteractiveSession(code, name, auto_respond=auto_respond)
+                _active_sessions[code] = session
+    finally:
+        release_analysis_start_slot()
 
     try:
         _persist_interactive_status(code, "running", run_mode="interactive")
-        asyncio.create_task(session.start())
+        task = _track_task(asyncio.create_task(session.start()))
+        session.set_task(task)
         return session
     except Exception:
         with _sessions_lock:
@@ -496,7 +948,9 @@ def start_session(code: str, name: str, auto_respond: bool = False) -> Optional[
 
 
 def get_session(code: str) -> Optional["InteractiveSession"]:
+    _ensure_housekeeping()
     with _sessions_lock:
+        _prune_sessions_locked()
         return _active_sessions.get(code)
 
 
@@ -507,9 +961,62 @@ def respond_session(code: str, text: str) -> bool:
     return False
 
 
-def remove_session(code: str):
+def remove_session(code: str, session: Optional["InteractiveSession"] = None):
     with _sessions_lock:
+        current = _active_sessions.get(code)
+        if session is None:
+            if current is not None and (current.is_running or current.is_settling):
+                return
+        elif current is not session:
+            return
+        if current is not None:
+            _active_sessions.pop(code, None)
+
+
+def _prune_sessions_locked() -> None:
+    now = monotonic()
+    expired = [
+        code
+        for code, session in _active_sessions.items()
+        if not session.is_running
+        and not session.is_settling
+        and now - getattr(session, "_finished_at", now) >= INTERACTIVE_SESSION_TTL_SECONDS
+    ]
+    for code in expired:
         _active_sessions.pop(code, None)
+
+    if len(_active_sessions) <= MAX_RETAINED_INTERACTIVE_SESSIONS:
+        return
+    finished = sorted(
+        (
+            (getattr(session, "_finished_at", now), code)
+            for code, session in _active_sessions.items()
+            if not session.is_running and not session.is_settling
+        )
+    )
+    for _, code in finished[: max(0, len(_active_sessions) - MAX_RETAINED_INTERACTIVE_SESSIONS)]:
+        _active_sessions.pop(code, None)
+
+
+def _retain_session(session: InteractiveSession) -> None:
+    with _sessions_lock:
+        if _active_sessions.get(session.code) is session:
+            _prune_sessions_locked()
+
+
+def _session_is_current(session: InteractiveSession) -> bool:
+    with _sessions_lock:
+        return _active_sessions.get(session.code) is session
+
+
+def mark_analysis_error_for_session(session: InteractiveSession, message: str):
+    if _session_is_current(session):
+        mark_analysis_error(session.code, message)
+
+
+def mark_analysis_idle_for_session(session: InteractiveSession):
+    if _session_is_current(session):
+        mark_analysis_idle(session.code)
 
 
 async def save_results(
@@ -520,17 +1027,19 @@ async def save_results(
     from core.report_storage import save_report_summary
     from db.database import SessionLocal
 
-    if session.final_status != "done":
-        return
+    if session.final_status != "done" or not _session_is_current(session):
+        return False
 
     if not acquire_analysis_start_slot():
-        return
+        return False
 
     try:
         if is_reset_in_progress():
-            return
+            return False
         if reset_generation is not None and reset_generation != get_reset_generation():
-            return
+            return False
+        if session.final_status != "done" or not _session_is_current(session):
+            return False
 
         content = extract_report_markdown(session.report_markdown or session.output_buffer)
         if (
@@ -539,10 +1048,12 @@ async def save_results(
             or "<tool_use" in content
             or ("投资分析报告" not in content and "综合评分" not in content)
         ):
-            mark_analysis_error(session.code, "模型未生成有效报告（疑似工具未启用）")
-            return
+            mark_analysis_error_for_session(session, "模型未生成有效报告（疑似工具未启用）")
+            return False
 
         final_html_path = html_path or move_generated_report_html(session.code, session.report_date)
+        if session.final_status != "done" or not _session_is_current(session):
+            return False
 
         db = SessionLocal()
         try:
@@ -558,16 +1069,42 @@ async def save_results(
             db.close()
 
         if report is None:
-            return
+            return False
 
+        if session.final_status != "done" or not _session_is_current(session):
+            return False
         _persist_interactive_status(
             session.code,
             "done",
             run_mode="interactive",
             message=session.final_message,
         )
+        return True
     finally:
         release_analysis_start_slot()
+
+
+async def shutdown_interactive_sessions(deadline: float) -> bool:
+    set_accepting_new_tasks(False)
+    with _sessions_lock:
+        sessions = list(_active_sessions.values())
+    for session in sessions:
+        session.cancel()
+    while True:
+        tasks = get_background_tasks()
+        if not tasks:
+            return True
+        timeout = max(0.0, deadline - monotonic())
+        if timeout <= 0:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            return False
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        if pending and monotonic() >= deadline:
+            for task in pending:
+                task.cancel()
+            return False
 
 
 def mark_analysis_running(code: str):

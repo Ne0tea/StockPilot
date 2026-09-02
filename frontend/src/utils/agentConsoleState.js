@@ -1,3 +1,7 @@
+export const AGENT_CONSOLE_EVENT_LIMIT = 256
+export const AGENT_CONSOLE_TOOL_CALL_LIMIT = 256
+export const AGENT_CONSOLE_DIAGNOSTIC_LIMIT = 128
+
 export function createAgentConsoleState() {
   return {
     status: 'idle',
@@ -17,7 +21,7 @@ export function createAgentConsoleState() {
 export function applyAgentConsoleEvent(state, event) {
   const nextState = {
     ...state,
-    events: [...state.events, event],
+    events: appendBounded(state.events, event, AGENT_CONSOLE_EVENT_LIMIT),
     toolCalls: [...state.toolCalls],
     diagnostics: [...state.diagnostics],
   }
@@ -43,13 +47,13 @@ export function applyAgentConsoleEvent(state, event) {
       }
       break
     case 'tool':
-      nextState.toolCalls = [...state.toolCalls, event]
+      nextState.toolCalls = appendBounded(state.toolCalls, event, AGENT_CONSOLE_TOOL_CALL_LIMIT)
       if (!isTerminalStatus(nextState.status)) {
         nextState.status = 'running'
       }
       break
     case 'diagnostic':
-      nextState.diagnostics = [...state.diagnostics, event]
+      nextState.diagnostics = appendBounded(state.diagnostics, event, AGENT_CONSOLE_DIAGNOSTIC_LIMIT)
       nextState.statusLabel = readText(event.text, event.message, state.statusLabel)
       break
     case 'final_result':
@@ -70,6 +74,11 @@ export function applyAgentConsoleEvent(state, event) {
   nextState.terminalKind = getTerminalKind(nextState)
   nextState.detailsExpanded = shouldKeepDetailsExpanded(nextState)
   return nextState
+}
+
+function appendBounded(items, item, limit) {
+  const next = [...items, item]
+  return next.length > limit ? next.slice(-limit) : next
 }
 
 export function isAgentConsoleTerminalState(state) {
