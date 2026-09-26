@@ -89,6 +89,10 @@ class Settings(Base):
     claude_api_key = Column(String, default="")
     claude_auth_token = Column(String, default="")
     claude_base_url = Column(String, default="")
+    opencode_provider = Column(String, default="")
+    opencode_model = Column(String, default="")
+    opencode_api_key = Column(String, default="")
+    opencode_base_url = Column(String, default="")
 
 
 class MailDeliveryRecord(Base):

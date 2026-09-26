@@ -1,7 +1,8 @@
-"""Interactive stock analysis session using ClaudeSDKClient multi-turn flow."""
+"""Interactive stock analysis session using OpenCode CLI subprocess flow."""
 
 import asyncio
 import json
+import os
 import threading
 from collections import deque
 from datetime import date
@@ -9,14 +10,15 @@ from time import monotonic
 from typing import Optional
 from uuid import uuid4
 
-from claude_agent_sdk import (
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    PermissionResultAllow,
-    PermissionResultDeny,
-    ToolPermissionContext,
+from core.opencode_client import (
+    AssistantMessage,
+    OpencodeClient,
+    OpencodeOptions,
+    ResultMessage,
+    StreamEvent,
+    TextBlock,
 )
-from claude_agent_sdk.types import AssistantMessage, ResultMessage, StreamEvent, TextBlock
+from core.sse_safe import SSE_SAFE_TEXT_BYTES, trim_event_for_sse
 
 from core.analysis_task_state import shanghai_today, upsert_task_status
 from core.report_renderer import (
@@ -39,9 +41,13 @@ MAX_INTERACTIVE_CRITICAL_EVENTS = 128
 INTERACTIVE_SESSION_TTL_SECONDS = 30 * 60
 MAX_RETAINED_INTERACTIVE_SESSIONS = 256
 
+# h11 (used by uvicorn) caps each chunked HTTP event at ~16 KB. SSE
+# ``data: <json>\n\n`` payloads above that trigger ``Separator is found, but
+# chunk is longer than limit`` and kill the connection. We trim before
+# enqueueing so the wire size always fits well below the cap.
+SSE_SAFE_PAYLOAD_BYTES = 12 * 1024
+
 LOGIN_QUESTION_OPTIONS = ["已登录", "继续分析", "跳过"]
-AFFIRMATIVE_RESPONSES = {"已登录", "继续分析", "登录了", "allow", "允许", "yes", "y"}
-NEGATIVE_RESPONSES = {"跳过", "没登录", "未登录", "不想登录", "deny", "拒绝", "no", "n"}
 
 
 # Active sessions: {code: InteractiveSession}
@@ -320,20 +326,6 @@ def classify_assistant_question(text: str) -> Optional[dict]:
     return None
 
 
-def build_permission_question(tool_name: str, tool_input: dict, context: ToolPermissionContext) -> dict:
-    title = context.title or f"是否允许使用工具 {tool_name}？"
-    details = context.description or json.dumps(tool_input, ensure_ascii=False)
-    return {
-        "kind": "tool_permission",
-        "question": title,
-        "default": "允许",
-        "options": ["允许", "拒绝"],
-        "details": f"{tool_name}: {details}",
-        "tool_name": tool_name,
-        "tool_input": tool_input,
-    }
-
-
 class UserResponse:
     """Holds a pending user response with async coordination."""
 
@@ -354,7 +346,8 @@ class UserResponse:
 
 
 class InteractiveSession:
-    """Manages an interactive analysis via ClaudeSDKClient streaming conversation."""
+    """Manages an interactive analysis via OpenCode CLI subprocess (single-run
+    model with optional follow-up runs for HTML retry / completion nudge)."""
 
     def __init__(self, code: str, name: str, auto_respond: bool = False):
         self.code = code
@@ -578,6 +571,7 @@ class InteractiveSession:
     def _put_event(self, event: dict):
         if event.get("type") == "heartbeat":
             return
+        event = trim_event_for_sse(event)
         event = self._record_event(event)
         self._log_writer.append(event)
         with self._event_lock:
@@ -668,34 +662,79 @@ class InteractiveSession:
                 self._log_writer.close(final_status=self.final_status)
 
     async def _run_conversation(self):
-        async def can_use_tool(tool_name: str, tool_input: dict, context: ToolPermissionContext):
-            question = build_permission_question(tool_name, tool_input, context)
-            answer, meta = await self._ask_question(question)
-            response_text = normalize_answer(answer, question["default"])
-            self._emit_user_response(question, response_text, meta)
-            allow = response_text in AFFIRMATIVE_RESPONSES
-            if allow:
-                return PermissionResultAllow()
-            message = "用户拒绝了本次工具调用"
-            if meta.get("source") == "timeout":
-                message = "超时后默认拒绝工具调用"
-            return PermissionResultDeny(message=message, interrupt=False)
+        html_target_path = build_report_instruction_target(self.code, self.report_date)
+        options = self._build_opencode_options()
+        client = OpencodeClient(options)
+        client.run(self._build_initial_prompt(html_target_path))
 
-        options = ClaudeAgentOptions(
-            permission_mode="bypassPermissions" if self.auto_respond else "default",
-            skills=["stock-analyzer"],
-            continue_conversation=False,
-            cwd=ensure_reports_root(),
-            allowed_tools=[
-                "Bash", "Read", "Write", "Edit",
-                "WebFetch", "WebSearch", "Glob", "Grep",
-            ],
-            can_use_tool=None if self.auto_respond else can_use_tool,
-            include_partial_messages=True,
+        self._put_event({"type": "status", "text": "正在启动分析会话..."})
+
+        async with client:
+            async for message in client.receive_messages():
+                if not self._running:
+                    break
+                if isinstance(message, AssistantMessage):
+                    await self._handle_assistant_message(message)
+                elif isinstance(message, StreamEvent):
+                    self._handle_stream_event(message)
+                elif isinstance(message, ResultMessage):
+                    if message.is_error:
+                        raise RuntimeError(message.result or "分析会话失败")
+                    break
+
+        if not self._running:
+            return
+
+        # main run 结束 → 处理 follow-up：HTML 补生成 + 完成催促
+        if self._analysis_done_seen and self._should_check_html_after_turn(None):
+            html_path = move_generated_report_html(self.code, self.report_date)
+            if not html_path and self._html_retry_count < MAX_HTML_RETRY_ATTEMPTS:
+                self._html_retry_count += 1
+                self._put_event(
+                    {"type": "status", "text": "检测到 HTML 报告缺失，正在强制补生成一次..."}
+                )
+                await self._run_followup(self._build_missing_html_retry_message())
+            elif not html_path:
+                self.final_message = "HTML报告缺失，已保存Markdown结果"
+                self._put_event({"type": "status", "text": self.final_message})
+            return
+
+        if not self._analysis_done_seen:
+            nudge = self._build_completion_nudge_message()
+            if nudge:
+                self._put_event({"type": "status", "text": "分析流程尚未完成，提示模型继续..."})
+                await self._run_followup(nudge)
+
+    def _build_opencode_options(self) -> OpencodeOptions:
+        """Read provider/model from DB Settings; fall back to opencode-go/minimax-m3."""
+        from db.database import SessionLocal
+        from db.models import Settings
+
+        model = "opencode-go/minimax-m3"
+        try:
+            db = SessionLocal()
+            try:
+                row = db.query(Settings).first()
+                if row:
+                    configured = (row.opencode_model or "").strip()
+                    if configured:
+                        model = configured
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+        cwd = os.path.join(ensure_reports_root(), self.code)
+        os.makedirs(cwd, exist_ok=True)
+
+        return OpencodeOptions(
+            model=model,
+            cwd=cwd,
+            auto_approve=self.auto_respond,
         )
 
-        html_target_path = build_report_instruction_target(self.code, self.report_date)
-        outgoing_message = (
+    def _build_initial_prompt(self, html_target_path: str) -> str:
+        return (
             f"分析股票 {self.name}({self.code})，请生成完整分析报告。\n"
             "\n"
             "【一键式自动模式 — 强约束】\n"
@@ -707,45 +746,35 @@ class InteractiveSession:
             "   - 任何需要用户回答“是/否/继续/跳过”的提示）。\n"
             "   遇到需要决策的分支，按skill 的默认推荐路径继续执行，不要停下等待。\n"
             "3. 工具调用一律视为已授权，按 skill 内置默认参数直接调用，不要解释“是否使用某工具”。\n"
-            "4. 失败处理：单次工具失败按 skill 重试一次，仍失败则在最终报告“数据来源状态”表格中""标注为【失败】并继续推进，不要中断流程，不要询问用户。\n"
+            "4. 失败处理：单次工具失败按 skill 重试一次，仍失败则在最终报告“数据来源状态”表格中"
+            "标注为【失败】并继续推进，不要中断流程，不要询问用户。\n"
             "5. 输出顺序固定：先在对话中完整输出 Markdown 报告 → 再生成 HTML 报告并写入 "
             f"`{html_target_path}`"
-            "6. 全部完成后，仅追加一行：`__ANALYSIS_DONE__`，不要再问用户任何问题。\n"
+            "\n6. 全部完成后，仅追加一行：`__ANALYSIS_DONE__`，不要再问用户任何问题。\n"
         )
-        self._put_event({"type": "status", "text": "正在启动分析会话..."})
 
-        async with ClaudeSDKClient(options) as client:
-            while self._running:
-                await client.query(outgoing_message, session_id=self.session_id)
-                next_user_reply: Optional[str] = None
-                async for message in client.receive_response():
+    async def _run_followup(self, prompt: str) -> None:
+        """Run a follow-up opencode invocation (HTML retry / completion nudge)."""
+        options = self._build_opencode_options()
+        client = OpencodeClient(options)
+        client.run(prompt)
+        try:
+            async with client:
+                async for message in client.receive_messages():
+                    if not self._running:
+                        break
                     if isinstance(message, AssistantMessage):
-                        reply = await self._handle_assistant_message(message)
-                        if reply is not None:
-                            next_user_reply = reply
+                        await self._handle_assistant_message(message)
                     elif isinstance(message, StreamEvent):
                         self._handle_stream_event(message)
                     elif isinstance(message, ResultMessage):
                         if message.is_error:
-                            detail = message.result or "分析会话失败"
-                            raise RuntimeError(detail)
+                            self._put_event(
+                                {"type": "error", "text": message.result or "follow-up 失败"}
+                            )
                         break
-
-                if not self._running:
-                    return
-
-                if self._should_check_html_after_turn(next_user_reply):
-                    if self._handle_missing_html_after_turn(move_generated_report_html(self.code, self.report_date)):
-                        outgoing_message = self._build_missing_html_retry_message()
-                        continue
-                    self._put_event({"type": "status", "text": "正在整理最终报告..."})
-                    return
-
-                if next_user_reply is None:
-                    outgoing_message = self._build_completion_nudge_message()
-                    continue
-
-                outgoing_message = next_user_reply
+        except asyncio.CancelledError:
+            raise
 
     async def _handle_assistant_message(self, message: AssistantMessage) -> Optional[str]:
         text = "".join(block.text for block in message.content if isinstance(block, TextBlock)).strip()
@@ -753,7 +782,7 @@ class InteractiveSession:
             return None
 
         self.output_buffer += text + "\n"
-        self._put_event({"type": "output", "text": text})
+        self._emit_output_text(text)
         if ANALYSIS_DONE_SENTINEL in text:
             self._analysis_done_seen = True
 
@@ -762,6 +791,18 @@ class InteractiveSession:
             extracted = extract_report_markdown(self.output_buffer)
             if extracted:
                 self.report_markdown = extracted
+            return None
+
+        if not self.auto_respond:
+            # opencode 单进程模型不支持 follow-up 答问题——把请求记为 error
+            self.final_status = "error"
+            self.final_message = (
+                "模型请求用户输入，opencode 单进程模式不支持交互式问答。"
+                f"问题：{question.get('question', '')}"
+            )
+            mark_analysis_error_for_session(self, self.final_message)
+            self._put_event({"type": "error", "text": self.final_message})
+            self._running = False
             return None
 
         answer, meta = await self._ask_question(question)
@@ -837,6 +878,47 @@ class InteractiveSession:
         partial = event.get("partial") or event.get("text") or ""
         if name and partial:
             self._put_event({"type": "progress", "action": name, "text": partial[:300]})
+
+    def _emit_output_text(self, text: str) -> None:
+        """Push ``text`` to the SSE queue as one or more ``output`` events.
+
+        Splits at paragraph boundaries (``\\n\\n``), then at single newlines,
+        then as a last resort truncates, so each emitted event stays well
+        below :data:`SSE_SAFE_TEXT_BYTES` regardless of model verbosity.
+        """
+        if len(text.encode("utf-8")) <= SSE_SAFE_TEXT_BYTES:
+            self._put_event({"type": "output", "text": text})
+            return
+
+        def _flush(chunk: str) -> None:
+            if chunk:
+                self._put_event({"type": "output", "text": chunk})
+
+        # First pass: split on double newline (markdown paragraph boundary).
+        for paragraph in text.split("\n\n"):
+            paragraph = paragraph.strip("\n")
+            if not paragraph:
+                continue
+            if len(paragraph.encode("utf-8")) <= SSE_SAFE_TEXT_BYTES:
+                _flush(paragraph)
+                continue
+            # Second pass: split on single newline.
+            lines = paragraph.split("\n")
+            buf: list[str] = []
+            buf_bytes = 0
+            sep_bytes = 1  # the joining "\n"
+            for line in lines:
+                line_bytes = len(line.encode("utf-8"))
+                projected = buf_bytes + (sep_bytes if buf else 0) + line_bytes
+                if projected > SSE_SAFE_TEXT_BYTES and buf:
+                    _flush("\n".join(buf))
+                    buf = [line]
+                    buf_bytes = line_bytes
+                else:
+                    buf.append(line)
+                    buf_bytes = projected if buf_bytes or line_bytes else line_bytes
+            if buf:
+                _flush("\n".join(buf))
 
     async def _ask_question(self, question: dict) -> tuple[str, dict]:
         default = question.get("default") or ""

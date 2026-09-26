@@ -10,7 +10,6 @@ pydantic==2.13.4
 markdown2==2.5.0
 python-dotenv==1.2.2
 PyYAML==6.0.3
-claude-agent-sdk==0.2.85
 
 pandas==3.0.3
 numpy==2.4.6

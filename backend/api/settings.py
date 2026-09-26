@@ -7,6 +7,7 @@ from typing import Optional
 from db.database import get_db
 from db.models import Settings
 from core.claude_settings import sync_claude_settings_file
+from core.opencode_settings import sync_opencode_config
 from core.scheduler import reschedule_daily_report
 from core.notify import send_email, send_wechat
 
@@ -28,6 +29,10 @@ class SettingsIn(BaseModel):
     claude_api_key: Optional[str] = None
     claude_auth_token: Optional[str] = None
     claude_base_url: Optional[str] = None
+    opencode_provider: Optional[str] = None
+    opencode_model: Optional[str] = None
+    opencode_api_key: Optional[str] = None
+    opencode_base_url: Optional[str] = None
 
 
 def apply_tickflow_env_from_settings(settings_row: Settings) -> None:
@@ -75,6 +80,7 @@ def update_settings(data: SettingsIn, db: Session = Depends(get_db)):
     else:
         apply_tickflow_env_from_settings(s)
     sync_claude_settings_file(s)
+    sync_opencode_config(s)
     if "schedule_time" in updates:
         reschedule_daily_report(s.schedule_time)
     return s

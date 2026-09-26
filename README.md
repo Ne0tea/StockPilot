@@ -77,7 +77,8 @@ bash start.sh
 1. Add a stock from the Stocks page or `POST /api/watchlist`.
 2. Trigger one stock or the whole watchlist through the analysis endpoints.
 3. The backend queues work and runs analysis in FIFO order.
-4. The daily-report flow invokes the local `claude code`.
+4. The daily-report flow invokes the local `opencode` CLI
+   (see [OpenCode Integration](#opencode-integration) below).
 5. Generated Markdown is parsed into structured report fields and stored in SQLite.
 6. Report artifacts are saved under `backend/reports/`.
 
@@ -113,18 +114,23 @@ Notification attempts are written to the `notification_log` table and surfaced b
 
 There is no `.env.example` file in the repository. Most user-facing runtime settings are stored through the Settings page and persisted in SQLite.
 
-### Daily Report LLM Settings
+### Daily Report LLM Settings (OpenCode)
 
 Saved fields:
 
-- `claude_model`
-- `claude_api_key`
-- `claude_auth_token`
-- `claude_base_url`
+- `opencode_provider` — one of `opencode-go`, `anthropic`, `openai`, `custom`
+- `opencode_model` — `<provider>/<model-id>`, e.g. `opencode-go/minimax-m3`
+- `opencode_api_key` — required only for `anthropic` / `openai` / `custom`
+  when the gateway does not honour `~/.local/share/opencode/auth.json`
+- `opencode_base_url` — required only for custom OpenAI- or Anthropic-
+  compatible gateways (e.g. `https://kuaipao.pro`)
 
-When these values are updated, the backend rewrites:
+When these values are updated, the backend merges them into:
 
-- `backend/reports/.claude/settings.json`
+- `~/.config/opencode/opencode.jsonc` (`provider.<provider>` section)
+
+Other sections of `opencode.jsonc` (`plugin`, `lsp`, etc.) are preserved
+untouched.
 
 ### Specialist Agent Settings
 
@@ -157,9 +163,40 @@ The backend applies this value to the `TICKFLOW_API_KEY` environment variable at
 
 ## Known Boundaries
 
-- Daily report generation depends on a local `claude code`.
-- Interactive analysis also depends on Claude-based local tooling.
+- Daily report generation depends on a local `opencode` CLI (≥ 1.18)
+  with the `stock-analyzer` skill installed (see below).
+- Interactive analysis also depends on OpenCode-based local tooling.
 - Specialist agent analysis requires OpenAI-compatible credentials saved in Settings.
+
+## OpenCode Integration
+
+The daily-report flow shells out to `opencode run` per stock. Two pieces
+need to be in place once on the host running the backend.
+
+1. **The `opencode` binary**, discoverable via one of:
+   - `~/.opencode/bin/opencode` (default OpenCode install path)
+   - `$OPENCODE_BIN` environment variable
+   - `opencode` on `$PATH`
+
+2. **The `stock-analyzer` skill**, discoverable via one of:
+   - `~/.config/opencode/skills/stock-analyzer/SKILL.md` (user-level)
+   - a project-level `skills/stock-analyzer/SKILL.md`
+
+   The skill is bundled with the project under
+   `~/.claude/skills/stock-analyzer/`; symlinking it into the
+   OpenCode skills directory is sufficient:
+
+   ```bash
+   ln -sfn ~/.claude/skills/stock-analyzer \
+          ~/.config/opencode/skills/stock-analyzer
+   ```
+
+### Picking a model
+
+For OpenCode Go (Coding Plan) subscribers, the cheapest model on the
+plan is the default. Anthropic / OpenAI / custom gateways can also be
+configured through the Settings page — credentials are written to
+`~/.config/opencode/opencode.jsonc`.
 
 ## License
 

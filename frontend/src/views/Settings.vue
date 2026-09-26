@@ -181,46 +181,106 @@
         </div>
       </div>
 
-      <!-- Daily Report Claude Config -->
+      <!-- Daily Report LLM Config (OpenCode) -->
       <div class="settings-card">
         <div class="card-header">
           <div class="card-header-icon" style="background: var(--accent-orange-light); color: var(--accent-orange);">
-            <el-icon :size="20"><MagicStick /></el-icon>
+            <el-icon :size=20><MagicStick /></el-icon>
           </div>
           <div>
-            <h3 class="card-header-title">每日报告LLM配置</h3>
-            <p class="card-header-desc">保存后自动重建 backend/reports/.claude/settings.json</p>
+            <h3 class="card-header-title">每日报告LLM配置 (OpenCode)</h3>
+            <p class="card-header-desc">保存后自动 patch ~/.config/opencode/opencode.jsonc</p>
           </div>
         </div>
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">
               <el-icon class="label-icon"><Cpu /></el-icon>
-              model
+              Provider
             </label>
-            <el-input v-model="settings.claude_model" placeholder="deepseek-v4-pro[1m]" />
+            <el-select v-model="settings.opencode_provider" style="width:100%" @change="onProviderChange">
+              <el-option
+                v-for="p in opencodeProviderPresets"
+                :key="p.value"
+                :label="p.label"
+                :value="p.value"
+              >
+                <div style="display:flex; flex-direction:column; gap:2px;">
+                  <span style="font-weight:500;">{{ p.label }}</span>
+                  <span style="font-size:11px; color: var(--text-secondary);">{{ p.hint }}</span>
+                </div>
+              </el-option>
+            </el-select>
           </div>
           <div class="form-group">
             <label class="form-label">
-              <el-icon class="label-icon"><Lock /></el-icon>
-              ANTHROPIC_API_KEY
+              <el-icon class="label-icon"><MagicStick /></el-icon>
+              Model
             </label>
-            <el-input v-model="settings.claude_api_key" type="password" show-password placeholder="sk-..." />
+            <el-select
+              v-model="settings.opencode_model"
+              style="width:100%"
+              filterable
+              allow-create
+              default-first-option
+              :placeholder="modelPlaceholder"
+            >
+              <el-option
+                v-for="m in currentModelOptions"
+                :key="m"
+                :label="m"
+                :value="m"
+              />
+            </el-select>
+            <p class="field-hint">格式：<code>provider/model-id</code>。可下拉选择推荐模型，也可手输任意 opencode 支持的模型。</p>
           </div>
-          <div class="form-group">
-            <label class="form-label">
-              <el-icon class="label-icon"><Lock /></el-icon>
-              ANTHROPIC_AUTH_TOKEN
-            </label>
-            <el-input v-model="settings.claude_auth_token" type="password" show-password placeholder="sk-..." />
-          </div>
-          <div class="form-group">
-            <label class="form-label">
-              <el-icon class="label-icon"><Link /></el-icon>
-              ANTHROPIC_BASE_URL
-            </label>
-            <el-input v-model="settings.claude_base_url" placeholder="https://your-gateway.example.com" />
-          </div>
+          <template v-if="showCustomCreds">
+            <div class="form-group">
+              <label class="form-label">
+                <el-icon class="label-icon"><Link /></el-icon>
+                Base URL
+              </label>
+              <el-input
+                v-model="settings.opencode_base_url"
+                :placeholder="baseUrlPlaceholder"
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">
+                <el-icon class="label-icon"><Lock /></el-icon>
+                API Key
+              </label>
+              <el-input
+                v-model="settings.opencode_api_key"
+                type="password"
+                show-password
+                placeholder="sk-..."
+              />
+            </div>
+            <p class="field-hint">用于 Anthropic/OpenAI 兼容网关（如 kuaipao.pro）。opencode-go 不需要凭据。</p>
+          </template>
+          <details v-if="hasLegacyClaudeConfig" class="legacy-collapse">
+            <summary>已弃用的 claude_* 字段（旧版兼容）</summary>
+            <div class="legacy-grid">
+              <div class="form-group">
+                <label class="form-label">claude_model</label>
+                <el-input v-model="settings.claude_model" placeholder="claude-sonnet-4-6" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">claude_api_key</label>
+                <el-input v-model="settings.claude_api_key" type="password" show-password />
+              </div>
+              <div class="form-group">
+                <label class="form-label">claude_auth_token</label>
+                <el-input v-model="settings.claude_auth_token" type="password" show-password />
+              </div>
+              <div class="form-group">
+                <label class="form-label">claude_base_url</label>
+                <el-input v-model="settings.claude_base_url" />
+              </div>
+            </div>
+            <p class="field-hint">仍会同步写入 <code>backend/reports/.claude/settings.json</code>（兼容旧版 Claude Code 调用路径），可留空让其自然失效。</p>
+          </details>
         </div>
       </div>
     </div>
@@ -236,7 +296,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { getSettings, updateSettings, testEmail, testWechat } from '../api'
 import { ElMessage } from 'element-plus'
 import {
@@ -256,7 +316,71 @@ const testingWechat = ref(false)
 const emailTestResult = ref(null)
 const wechatTestResult = ref(null)
 
+const opencodeProviderPresets = [
+  { value: 'opencode-go', label: 'opencode-go (Coding Plan 订阅)', hint: '走 opencode-go 计费，无需填写 API Key' },
+  { value: 'anthropic', label: 'anthropic (官方/兼容网关)', hint: '需要 Base URL + API Key' },
+  { value: 'openai', label: 'openai (官方/兼容网关)', hint: '需要 Base URL + API Key' },
+  { value: 'custom', label: 'custom (自定义 provider)', hint: '需要 Base URL + API Key' },
+]
+
+const opencodeModelOptions = {
+  'opencode-go': [
+    'opencode-go/minimax-m3',
+    'opencode-go/deepseek-v4-pro',
+    'opencode-go/deepseek-v4-flash',
+    'opencode-go/glm-5.3-flash',
+    'opencode-go/kimi-k2.7-code',
+    'opencode-go/gpt-6-luna',
+  ],
+  'anthropic': [
+    'anthropic/claude-sonnet-4-6',
+    'anthropic/claude-opus-4-6',
+    'anthropic/claude-haiku-4-5',
+  ],
+  'openai': [
+    'openai/gpt-5.5',
+    'openai/gpt-5.4-mini',
+    'openai/o4-mini',
+  ],
+  'custom': [],
+}
+
+const customProviders = new Set(['anthropic', 'openai', 'custom'])
+
 onMounted(async () => { settings.value = (await getSettings()).data })
+
+const currentModelOptions = computed(() => {
+  const p = settings.value?.opencode_provider || 'opencode-go'
+  return opencodeModelOptions[p] || []
+})
+
+const showCustomCreds = computed(() => customProviders.has(settings.value?.opencode_provider))
+
+const modelPlaceholder = computed(() => {
+  const p = settings.value?.opencode_provider || 'opencode-go'
+  const def = opencodeModelOptions[p]?.[0]
+  return def || 'provider/model-id'
+})
+
+const baseUrlPlaceholder = computed(() => {
+  const p = settings.value?.opencode_provider
+  if (p === 'anthropic') return 'https://api.anthropic.com'
+  if (p === 'openai') return 'https://api.openai.com/v1'
+  return 'https://your-gateway.example.com'
+})
+
+const hasLegacyClaudeConfig = computed(() => {
+  const s = settings.value || {}
+  return Boolean(s.claude_model || s.claude_api_key || s.claude_auth_token || s.claude_base_url)
+})
+
+function onProviderChange() {
+  const p = settings.value?.opencode_provider
+  const opts = opencodeModelOptions[p] || []
+  if (!settings.value.opencode_model && opts.length) {
+    settings.value.opencode_model = opts[0]
+  }
+}
 
 async function save() {
   saving.value = true
@@ -395,6 +519,27 @@ async function doTestWechat() {
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.legacy-collapse {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--bg-color, #f8f9fa);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.legacy-collapse summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text-secondary);
+  user-select: none;
+}
+.legacy-collapse[open] summary {
+  margin-bottom: 12px;
+}
+.legacy-grid .form-group {
+  margin-bottom: 12px;
 }
 
 .form-footer {

@@ -18,6 +18,10 @@ SETTINGS_COLUMNS = (
     "claude_api_key",
     "claude_auth_token",
     "claude_base_url",
+    "opencode_provider",
+    "opencode_model",
+    "opencode_api_key",
+    "opencode_base_url",
 )
 DEPRECATED_SETTINGS_COLUMNS = {
     "total_capital",
@@ -38,6 +42,10 @@ NEW_SETTINGS_COLUMNS_DEFAULTS = {
     "claude_api_key": "''",
     "claude_auth_token": "''",
     "claude_base_url": "''",
+    "opencode_provider": "''",
+    "opencode_model": "''",
+    "opencode_api_key": "''",
+    "opencode_base_url": "''",
     "wechat_webhook_url": "''",
     "wechat_msg_type": "'markdown'",
 }
@@ -81,7 +89,11 @@ def migrate_settings_schema(engine):
                 claude_model varchar default '',
                 claude_api_key varchar default '',
                 claude_auth_token varchar default '',
-                claude_base_url varchar default ''
+                claude_base_url varchar default '',
+                opencode_provider varchar default '',
+                opencode_model varchar default '',
+                opencode_api_key varchar default '',
+                opencode_base_url varchar default ''
             )
         """))
 
